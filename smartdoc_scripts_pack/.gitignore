@@ -1,0 +1,11 @@
+windows/.venv/
+.gradle/
+android/.gradle/
+**/build/
+*.keystore
+*.jks
+*.properties.local
+.env
+logs/
+backups/
+output/

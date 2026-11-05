@@ -1,0 +1,39 @@
+# Python
+.venv/
+windows/.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*$py.class
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/.kotlin/
+android/local.properties
+android/captures/
+.gradle/
+
+# Secrets & Keys
+*.jks
+*.keystore
+.env
+
+# Build outputs, logs & backups
+logs/
+backups/
+output/
+smartdoc_scripts_pack/logs/
+smartdoc_scripts_pack/backups/
+smartdoc_scripts_pack/output/
+
+# Archive files
+*.b64
+*.7z
+*.zip
+*.tar.gz
+
+# OS specific
+.DS_Store
+Thumbs.db

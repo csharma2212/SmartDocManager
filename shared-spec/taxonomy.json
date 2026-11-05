@@ -1,0 +1,9 @@
+{
+    "categories":  [
+                       "Medical Record",
+                       "Government-issued Document",
+                       "Organization-issued ID Card",
+                       "Legal Document",
+                       "uncategorizable input"
+                   ]
+}
