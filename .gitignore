@@ -1,39 +1,75 @@
-# Python
+# ==============================================================================
+# SmartDocManager — Git Ignore Specification
+# ==============================================================================
+
+# --- Python & Virtual Environments ---
 .venv/
 windows/.venv/
+env/
+venv/
+ENV/
 __pycache__/
-.pytest_cache/
+**/__pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
 
-# Android / Gradle
+# --- Android, Gradle & Native Toolchains ---
+.gradle/
 android/.gradle/
 android/build/
 android/app/build/
+**/build/
 android/.kotlin/
-android/local.properties
 android/captures/
-.gradle/
+android/.cxx/
+local.properties
+android/local.properties
+*.iml
+.idea/
 
-# Secrets & Keys
+# --- Secrets, Credentials & Keystores (Security Critical) ---
 *.jks
 *.keystore
 .env
+*.key
+*.pem
 
-# Build outputs, logs & backups
+# --- Build Outputs, Execution Logs & Scaffolding Backups ---
+output/
 logs/
 backups/
-output/
+smartdoc_scripts_pack/output/
 smartdoc_scripts_pack/logs/
 smartdoc_scripts_pack/backups/
-smartdoc_scripts_pack/output/
+*.log
 
-# Archive files
-*.b64
-*.7z
+# --- Distribution & Archive Artifacts ---
 *.zip
 *.tar.gz
+*.7z
+*.b64
+*.rar
 
-# OS specific
+# --- IDE, Editor & AI Agent Environments ---
+.agents/
+.gemini/
+.claude/
+.cursor/
+*.code-workspace
+
+# --- Operating System Caches & Temporary Files ---
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.tmp
+*.temp
+*.bak
+*.swp

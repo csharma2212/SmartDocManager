@@ -1,4 +1,9 @@
-param([string]$ProjectRoot = $PSScriptRoot,[ValidateSet('Menu','Setup','Verify','Test','BuildWindows','BuildAndroid','BuildAll','LaunchWindows','OpenApks','DeployDebug')][string]$Action='Menu')
+param(
+    [string]$ProjectRoot = $PSScriptRoot,
+    [ValidateSet('Menu','Setup','Verify','Test','BuildWindows','BuildAndroid','BuildAndroidDebug','BuildAndroidRelease','InitKeystore','BuildAll','LaunchWindows','OpenApks','DeployDebug','Archive')][string]$Action='Menu',
+    [int]$Port = 8501,
+    [string]$Address = 'localhost'
+)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'scripts/common/Helpers.ps1')
 $Root=Assert-Root $ProjectRoot
@@ -20,12 +25,43 @@ function Stage([string]$File) {
  }
 }
 function Choose-Action {
- Write-Host "`nSmartDoc Development Controller ($Root)"
- Write-Host '1 Setup / Repair  2 Verify  3 Test  4 Build Windows  5 Build Android'
- Write-Host '6 Build All  7 Launch Windows  8 Open APK Folder  9 Deploy Debug APK  0 Exit'
- switch (Read-Host 'Choose') {
- '1' {'Setup'} '2' {'Verify'} '3' {'Test'} '4' {'BuildWindows'} '5' {'BuildAndroid'}
- '6' {'BuildAll'} '7' {'LaunchWindows'} '8' {'OpenApks'} '9' {'DeployDebug'} '0' {'Exit'}
+ Write-Host "`n======================================================================"
+ Write-Host "           SmartDocManager Master Controller ($Root)"
+ Write-Host "======================================================================"
+ Write-Host "  1  Setup / Repair Environment"
+ Write-Host "  2  Verify System Readiness & Audit"
+ Write-Host "  3  Run Full Pre-Build Test Suite (Windows + Android)"
+ Write-Host "  4  Build & Launch Windows Desktop Application"
+ Write-Host "  5  Build Android (Debug + Release)"
+ Write-Host "  6  Build Android Debug APK Only"
+ Write-Host "  7  Build Android Release APK Only"
+ Write-Host "  8  Initialize Keystore (Android Release Signing Setup)"
+ Write-Host "  9  Build All (Windows Desktop + Android APKs)"
+ Write-Host " 10  Launch Windows Desktop Application Directly"
+ Write-Host " 11  Open APK Output Folder"
+ Write-Host " 12  Deploy Debug APK to Phone & Launch (ADB)"
+ Write-Host " 13  Create Clean Source Archive (.zip)"
+ Write-Host "  0  Exit"
+ Write-Host "======================================================================"
+ switch (Read-Host 'Choose an action [0-13]') {
+ '1' {'Setup'}
+ '2' {'Verify'}
+ '3' {'Test'}
+ '4' {'BuildWindows'}
+ '5' {'BuildAndroid'}
+ '6' {'BuildAndroidDebug'}
+ '7' {'BuildAndroidRelease'}
+ '8' {'InitKeystore'}
+ '9' {'BuildAll'}
+ '10' {
+     $customPort = Read-Host 'Enter port (press Enter for default 8501)'
+     if ($customPort -match '^\d+$') { $script:Port = [int]$customPort }
+     'LaunchWindows'
+ }
+ '11' {'OpenApks'}
+ '12' {'DeployDebug'}
+ '13' {'Archive'}
+ '0' {'Exit'}
  default {throw 'Invalid menu selection'}
  }
 }
@@ -40,10 +76,18 @@ try {
  'Test' { foreach($x in $pre){Stage $x};Stage '05-verify-readiness.ps1';foreach($x in $tests){Stage $x} }
  'BuildWindows' {foreach($x in $pre){Stage $x};Stage '05-verify-readiness.ps1';foreach($x in $tests){Stage $x};Stage '09-build-windows.ps1';Stage '17-create-windows-shortcut.ps1';Stage '13-launch-windows.ps1'}
  'BuildAndroid' {foreach($x in $pre){Stage $x};Stage '05-verify-readiness.ps1';foreach($x in $tests){Stage $x};Stage '10-build-android-debug.ps1';Stage '11-build-android-release.ps1';Stage '12-verify-artifacts.ps1';Stage '14-open-android-output.ps1'}
+ 'BuildAndroidDebug' {foreach($x in $pre){Stage $x};Stage '05-verify-readiness.ps1';foreach($x in $tests){Stage $x};Stage '10-build-android-debug.ps1';Stage '12-verify-artifacts.ps1';Stage '14-open-android-output.ps1'}
+ 'BuildAndroidRelease' {foreach($x in $pre){Stage $x};Stage '05-verify-readiness.ps1';foreach($x in $tests){Stage $x};Stage '11-build-android-release.ps1';Stage '12-verify-artifacts.ps1';Stage '14-open-android-output.ps1'}
+ 'InitKeystore' {Stage '18-init-keystore.ps1'}
  'BuildAll' {foreach($x in $pre){Stage $x};Stage '05-verify-readiness.ps1';foreach($x in $tests){Stage $x};Stage '09-build-windows.ps1';Stage '10-build-android-debug.ps1';Stage '11-build-android-release.ps1';Stage '12-verify-artifacts.ps1';Stage '17-create-windows-shortcut.ps1';Stage '13-launch-windows.ps1';Stage '14-open-android-output.ps1'}
- 'LaunchWindows' {Stage '13-launch-windows.ps1'}
+ 'LaunchWindows' {
+     $launchScript = Join-Path $Root 'scripts/13-launch-windows.ps1'
+     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launchScript -Root $Root -Port $Port -Address $Address
+     if ($LASTEXITCODE -ne 0) { throw "Exit code $LASTEXITCODE" }
+ }
  'OpenApks' {Stage '14-open-android-output.ps1'}
  'DeployDebug' {Stage '15-deploy-android-debug.ps1'}
+ 'Archive' {Stage '19-create-clean-archive.ps1'}
  }
  Add-Content -LiteralPath $report -Value 'WORKFLOW SUCCEEDED (selected action)' 
  Write-Host "`nWORKFLOW SUCCEEDED ($Action)" -ForegroundColor Green

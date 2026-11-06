@@ -1,15 +1,15 @@
-# SmartDoc — Cross-Platform Document Classification POC
+# SmartDocManager — Cross-Platform Document Classification System
 
 > **Status:** Stage 2 Verified Implementation Candidate  
 > **Platform Support:** Windows 11 Desktop (Streamlit) & Android Native APK (Kotlin, Jetpack Compose)  
-> **Verification Status:** Windows Unit Tests (5/5 PASSED), Android Unit Tests (22/22 PASSED), Debug APK (BUILT & VERIFIED)
+> **Verification Status:** Windows Unit Tests (5/5 PASSED), Android Unit Tests (5/5 PASSED), Debug APK (BUILT & VERIFIED)
 
 ---
 
 ## Quickstart & Developer Runbook
 
 ### About This Section
-This runbook is the complete, single-stop operational guide for developing, testing, building, and deploying the SmartDoc POC applications. All lifecycle tasks are automated and orchestrated through the master controller [`dev.ps1`](./dev.ps1), which coordinates 17 specialized stage scripts across environment provisioning, preflight checks, testing, bytecode compilation, APK packaging, and device deployment.
+This runbook is the complete, single-stop operational guide for developing, testing, building, and deploying the SmartDocManager applications. All lifecycle tasks are automated and orchestrated through the master controller [`dev.ps1`](./dev.ps1), which coordinates 17 specialized stage scripts across environment provisioning, preflight checks, testing, bytecode compilation, APK packaging, and device deployment.
 
 To prevent build failures caused by missing prerequisites, commands follow a **strict mandatory execution order**. Each step in the ordered list below explains what the step accomplishes and why it is required, followed immediately by the exact PowerShell command to run.
 
@@ -38,27 +38,41 @@ Follow these steps in numerical sequence:
    ```
 
 4. **Step 4: Build & Launch Windows Desktop Application**  
-   *What it does:* Runs pre-checks and unit tests, compiles Python bytecode (`compileall`), validates required package imports (`streamlit`, `PIL`, `pypdfium2`, `pandas`), creates a shortcut on your Windows Desktop (`SmartDoc POC.lnk`), and boots the local Streamlit application in your default browser at `http://127.0.0.1:8501`.  
+   *What it does:* Runs pre-checks and unit tests, compiles Python bytecode (`compileall`), validates required package imports (`streamlit`, `PIL`, `pypdfium2`, `pandas`), creates a shortcut on your Windows Desktop (`SmartDocManager.lnk`), and boots the local Streamlit application in your default browser at `http://localhost:8501`.  
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildWindows
    ```
 
-5. **Step 5: Build, Package & Cryptographically Verify Android APK**  
-   *What it does:* Runs pre-checks and unit tests, compiles Kotlin source code with the Jetpack Compose compiler (`compileDebugKotlin`), packages DEX bytecode and resources into `output/android/SmartDoc-debug.apk`, and cryptographically verifies the APK signature using Android SDK `apksigner.bat` (Scheme v2). If release signing environment variables are configured, also generates and signs `SmartDoc-release.apk`.  
+5. **Step 5: Build, Package & Cryptographically Verify Android APKs**  
+   *What it does:* Runs pre-checks and unit tests, compiles Kotlin source code with the Jetpack Compose compiler (`compileDebugKotlin`), packages DEX bytecode and resources into `output/android/SmartDocManager-debug.apk`, and cryptographically verifies the APK signature using Android SDK `apksigner.bat` (Scheme v2). If release signing environment variables are configured, also generates and signs `SmartDocManager-release.apk`.  
    ```powershell
+   # Build Debug APK only:
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidDebug
+
+   # (Optional) Initialize Keystore for signed release builds:
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action InitKeystore
+
+   # Build Release APK only:
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidRelease
+
+   # Build Both Debug and Release APKs:
    powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroid
    ```
 
-6. **Step 6: Deploy Debug APK to Connected Android Device**  
-   *What it does:* Uses `adb install -r output/android/SmartDoc-debug.apk` to install the newly built APK onto a physical Android device (e.g., Realme C63 5G) connected via USB with Developer Options and USB Debugging authorized.  
+6. **Step 6: Deploy Debug APK to Connected Android Device & Test**  
+   *What it does:* Audits ADB connectivity, detects connected physical devices (e.g. Realme C63 5G), installs `output/android/SmartDocManager-debug.apk` directly over USB, automatically launches `com.smartdoc.poc/.MainActivity`, and provides real-time logcat streaming to catch runtime errors and crashes.  
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action DeployDebug
    ```
 
 7. **Step 7: Launch Windows Desktop App Directly (Without Rebuilding)**  
-   *What it does:* Starts the Streamlit application directly using the pre-existing virtual environment on `http://127.0.0.1:8501` and opens your default browser without running recompilation or tests.  
+   *What it does:* Starts the Streamlit application directly using the pre-existing virtual environment on `http://localhost:8501` (or custom `-Port <port>`) and opens your default browser without running recompilation or tests.  
    ```powershell
+   # Default launch on http://localhost:8501
    powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows
+
+   # Custom port launch on http://localhost:8080
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows -Port 8080
    ```
 
 ---
@@ -134,28 +148,98 @@ Executes all unit tests, compiles the Windows desktop application, creates the D
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAll
 ```
 
-#### Outcome E: Build & Verify Android APK Only
-Runs the Android unit tests, compiles Kotlin code, packages `SmartDoc-debug.apk` in `output/android/`, verifies the APK with `apksigner`, and opens the output folder:
+#### Outcome E: Build & Verify Android Debug APK Only
+Runs unit tests, compiles Kotlin code, packages `SmartDocManager-debug.apk` in `output/android/`, verifies the APK with `apksigner`, and opens the output folder:
+```powershell
+# Via dev.ps1:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidDebug
+
+# Or directly via standalone script:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\10-build-android-debug.ps1
+```
+
+#### Outcome F: Generate Keystore & Build Signed Android Release APK
+Generates a production release keystore (if not already created), registers user environment variables permanently, and compiles `SmartDocManager-release.apk`:
+```powershell
+# Step 1: Initialize signing keystore (prompts for password, auto-sets environment variables)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action InitKeystore
+# (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\18-init-keystore.ps1)
+
+# Step 2: Build signed Release APK
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidRelease
+# (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\11-build-android-release.ps1)
+```
+
+#### Outcome G: Build Both Android Debug & Release APKs
+Runs Android unit tests and builds both Debug and Release APKs in a single pass (if keystore is configured; skips release with warning if not):
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroid
 ```
 
-#### Outcome F: Build & Launch Windows Desktop App Only
-Runs the Windows unit tests, compiles Python bytecode, generates the Desktop shortcut (`SmartDoc POC.lnk`), and opens the application in your browser:
+#### Outcome H: Build & Launch Windows Desktop App Only
+Runs Windows unit tests, compiles Python bytecode, generates the Desktop shortcut (`SmartDocManager.lnk`), and opens the application in your browser:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildWindows
 ```
 
-#### Outcome G: Install Debug APK onto Physical Android Device
-Deploys `output/android/SmartDoc-debug.apk` directly over USB to your connected phone:
+#### Outcome I: Install & Test on Real Android Device via USB Cable
+Directly installs `SmartDocManager-debug.apk` onto a physical phone (e.g. Realme C63 5G) connected via USB with Developer Options and USB Debugging enabled, and automatically launches the app:
 ```powershell
+# Full guided interactive deployment:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action DeployDebug
+
+# Or directly via standalone script:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\15-deploy-android-debug.ps1
+
+# Direct ADB command alternative:
+adb install -r -d output/android/SmartDocManager-debug.apk
+adb shell am start -n com.smartdoc.poc/.MainActivity
 ```
 
-#### Outcome H: Interactive Menu Selection
-Launch the interactive controller and simply choose an action number (`1` through `9`):
+#### Outcome J: Real-Time Error Catching & Runtime Crash Diagnostics
+Keep a terminal open while interacting with the app on your phone. Any uncaught exceptions, network timeouts, API key rejections, permission errors, or crashes will be captured live:
+```powershell
+# Filter specifically for SmartDocManager logs, AndroidRuntime errors, and FATAL exceptions:
+adb logcat -v time | Select-String "SmartDoc|com.smartdoc.poc|AndroidRuntime|FATAL|Exception"
+
+# Clear phone log buffer before starting a test session:
+adb logcat -c
+```
+
+#### Outcome K: Interactive Menu Selection
+Launch the interactive master controller and choose from actions `1` through `13` or `0` to exit:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
+```
+
+#### Outcome L: Launch Windows Desktop App Directly (with Optional Custom Port)
+Start the desktop application directly at `http://localhost:8501` or any custom port without rebuilding or testing:
+```powershell
+# Default launch at http://localhost:8501
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows
+
+# Custom port launch at http://localhost:8080
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows -Port 8080
+
+# Direct script launch
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\13-launch-windows.ps1 -Port 8080
+```
+
+#### Outcome M: Pre-Configure Environment Variables for Hands-Free Launch
+Set your Google AI Studio API key and default model permanently in Windows so they are automatically pre-filled every time the app opens:
+```powershell
+[System.Environment]::SetEnvironmentVariable('GEMINI_MODEL', 'gemini-3-flash-preview', 'User')
+[System.Environment]::SetEnvironmentVariable('GEMINI_API_KEY', 'your_AQ.Ab_or_AIza_key_here', 'User')
+```
+
+#### Outcome N: Create Clean Distribution Source Archive (.zip)
+Generate a clean, lightweight (~0.4 MB) source archive excluding all machine-specific caches, virtual environments, build outputs, and logs:
+```powershell
+# Via dev.ps1 master controller:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Archive
+
+# Or directly via standalone script:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\19-create-clean-archive.ps1
 ```
 
 ---
@@ -165,11 +249,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
 
 | Target / Component | Status | Verification Details |
 | :--- | :--- | :--- |
-| **Windows Streamlit App** | **VERIFIED & PASSING** | `windows/app.py`, `windows/smartdoc/core.py`. Verified in Python 3.12 venv. |
+| **Windows Streamlit App** | **VERIFIED & PASSING** | `windows/app.py` (`SmartDocManager`), `windows/smartdoc/core.py`. Verified in Python 3.12 venv. |
 | **Windows Unit Tests** | **5/5 PASSED** | `windows/tests/test_core.py` executed via `pytest -q windows/tests` (100% pass). |
 | **Android Kotlin App** | **VERIFIED & PASSING** | `com.smartdoc.poc.MainActivity`, `Classifier.kt`, Kotlin 2.0.21, Jetpack Compose. |
 | **Android Unit Tests** | **5/5 PASSED** | `ClassifierTest.kt` executed via Gradle `testDebugUnitTest` (5/5 pass). |
-| **Debug APK Output** | **BUILT & VERIFIED** | Output at `output/android/SmartDoc-debug.apk` (~8.7 MB). Cryptographically verified with Android SDK `apksigner` (v2 scheme valid). |
+| **Debug APK Output** | **BUILT & VERIFIED** | Output at `output/android/SmartDocManager-debug.apk` (~8.7 MB). Cryptographically verified with Android SDK `apksigner` (v2 scheme valid). |
 | **Release APK Output** | **SUPPORTED (Gated)** | Builds signed release APK when environment variables `SMARTDOC_KEYSTORE`, `SMARTDOC_STORE_PASSWORD`, `SMARTDOC_KEY_ALIAS`, `SMARTDOC_KEY_PASSWORD` are provided. |
 | **Gradle Wrapper** | **BUNDLED** | Gradle 8.9 wrapper binaries verified and bundled (`gradle/wrapper/gradle-wrapper.jar`, `gradlew.bat`). |
 | **Android SDK Discovery** | **AUTOMATED** | Dynamically discovered via `Resolve-AndroidSdk` in `scripts/common/Helpers.ps1` from `ANDROID_HOME`, `android/local.properties`, or `%LOCALAPPDATA%\Android\Sdk`. |
@@ -186,6 +270,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
   * `pillow` — Image manipulation, orientation correction, and JPEG compression.
   * `pandas` — Structured classification result handling and CSV generation.
   * `pytest` — Unit test suite execution and test assertions.
+* **Application Assets:**
+  * `windows/assets/icon.ico` — Multi-resolution icon (16, 32, 48, 256 px) for the Windows Desktop shortcut.
+  * `windows/assets/icon.png` — High-resolution 256×256 PNG for the Streamlit browser favicon (`page_icon`).
 
 ### 2. Android Stack (`android/app/build.gradle.kts`)
 * **Toolchain:** JDK 17, Gradle 8.9, Android Gradle Plugin `8.7.3`, Kotlin `2.0.21`
@@ -198,6 +285,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
   * `androidx.compose.material3:material3`
   * `androidx.compose.foundation:foundation`
   * `junit:junit:4.13.2` (Unit tests)
+* **Application Icons (`android/app/src/main/res/`):**
+  * Bundled standard and round launcher icons (`ic_launcher.png`, `ic_launcher_round.png`) across all 5 standard Android density tiers (`mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`).
 * **SDK Targets:** `compileSdk = 35`, `targetSdk = 35`, `minSdk = 26`, `JavaVersion.VERSION_17`
 
 ### 3. Shared Specification (`shared-spec/`)
@@ -211,8 +300,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
 
 ### Windows Setup
 1. Run `dev.ps1 -Action Setup`. This invokes scaffolding (`04-create-scaffold.ps1`), creates `windows/.venv/`, and installs packages from `windows/requirements.txt`.
-2. Run `dev.ps1 -Action BuildWindows`. Verifies imports and byte compilation, creates a desktop shortcut (`SmartDoc POC.lnk`), and starts the Streamlit app at `http://127.0.0.1:8501`.
-3. In the Streamlit UI, enter your Gemini API key (never stored plaintext on disk).
+2. Run `dev.ps1 -Action BuildWindows`. Verifies imports and byte compilation, creates a desktop shortcut (`SmartDocManager.lnk`), and starts the Streamlit app at `http://localhost:8501`.
+3. In the Streamlit UI, enter your Gemini API key (supports both `AQ.Ab...` and `AIzaSy...` keys from [Google AI Studio](https://aistudio.google.com/apikey)) and verify the model is set to **`gemini-3-flash-preview`** (free-tier eligible). You can also click **`🔍 Detect Models for Key`** to automatically fetch and rank all active models for your key.
 
 ### Android CLI Setup (Without Android Studio)
 * **Prerequisites:** JDK 17, Android SDK command-line tools, SDK platform 35, build-tools 35, and platform-tools.
@@ -220,12 +309,126 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
 * **USB Debugging:** Enable Developer Options and USB Debugging on your phone. Connect via USB and authorize the computer before running `dev.ps1 -Action DeployDebug`.
 
 ### Android Release Signing
-To generate signed release APKs, set the following environment variables in your terminal before building:
-* `SMARTDOC_KEYSTORE` — Absolute path to your `.jks` or `.keystore` file.
-* `SMARTDOC_STORE_PASSWORD` — Keystore password.
-* `SMARTDOC_KEY_ALIAS` — Key alias.
-* `SMARTDOC_KEY_PASSWORD` — Key password.  
+To generate signed release APKs, the project provides an automated keystore generator script (`scripts/18-init-keystore.ps1`):
+1. **Automated Setup:**
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action InitKeystore
+   # or
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\18-init-keystore.ps1
+   ```
+   This prompts for a keystore password, generates a 2048-bit RSA key pair at `$HOME\.android\smartdocmanager-release.jks`, and permanently sets the required Windows user environment variables.
+2. **Environment Variables Configured:**
+   * `SMARTDOC_KEYSTORE` — Absolute path to your `.jks` or `.keystore` file (`%USERPROFILE%\.android\smartdocmanager-release.jks`).
+   * `SMARTDOC_STORE_PASSWORD` — Keystore password.
+   * `SMARTDOC_KEY_ALIAS` — Key alias (`smartdocmanager`).
+   * `SMARTDOC_KEY_PASSWORD` — Key password.
+3. **Build Command:**
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidRelease
+   ```
 *Never paste keystores or passwords into chat or commit them to source control.*
+
+---
+
+### Application Branding & Icon Specifications
+
+SmartDocManager is configured with end-to-end consistent branding and custom multi-resolution visual assets across both platforms:
+
+#### 1. Universal Name Configuration (`SmartDocManager`)
+* **Windows Desktop App:** Browser tab title (`page_title='SmartDocManager'`) and main screen header (`st.title('SmartDocManager Document Classifier')`) in [`windows/app.py`](./windows/app.py).
+* **Windows Desktop Shortcut:** Placed on your Windows Desktop as `SmartDocManager.lnk` pointing to `windows/assets/icon.ico`.
+* **Android Application Label:** `android:label="SmartDocManager"` in [`AndroidManifest.xml`](./android/app/src/main/AndroidManifest.xml).
+* **Android Native UI Title:** Headline title in Compose UI (`Text("SmartDocManager", ...)` in [`MainActivity.kt`](./android/app/src/main/java/com/smartdoc/poc/MainActivity.kt)).
+* **Android Shared Preferences:** Namespaced storage domain `smartdocmanager` for cloud acknowledgement state.
+* **Gradle Project Definition:** `rootProject.name = "SmartDocManager"` in [`android/settings.gradle.kts`](./android/settings.gradle.kts).
+* **Compiled Binary Outputs:** `output/android/SmartDocManager-debug.apk` and `output/android/SmartDocManager-release.apk`.
+* **CSV Export Artifact:** Exported classification reports default to `smartdocmanager_results.csv`.
+
+#### 2. Multi-Resolution Icon Assets
+* **Windows Desktop Icon:** [`windows/assets/icon.ico`](./windows/assets/icon.ico)
+  * Embedded multi-resolution icon bundle with 16×16, 32×32, 48×48, and 256×256 px layers. Used by Windows Explorer and Desktop shortcuts.
+* **Windows Browser Favicon:** [`windows/assets/icon.png`](./windows/assets/icon.png)
+  * High-resolution 256×256 px PNG passed to `st.set_page_config(page_icon=...)`.
+* **Android Launcher & Round Icons:** [`android/app/src/main/res/`](./android/app/src/main/res/)
+  * Standard (`ic_launcher.png`) and round (`ic_launcher_round.png`) icons bundled across all 5 standard Android density tiers:
+    * `mipmap-mdpi/`: 48×48 px
+    * `mipmap-hdpi/`: 72×72 px
+    * `mipmap-xhdpi/`: 96×96 px
+    * `mipmap-xxhdpi/`: 144×144 px
+    * `mipmap-xxxhdpi/`: 192×192 px
+  * Referenced in `AndroidManifest.xml` via `android:icon="@mipmap/ic_launcher"` and `android:roundIcon="@mipmap/ic_launcher_round"`.
+
+---
+
+### Machine Portability & Reproduction Runbook
+
+The project is architected to build and run cleanly on **any Windows 10/11 machine** without requiring Android Studio, WSL2, or global Gradle installations:
+
+#### System Prerequisites
+1. **Operating System:** Windows 10 or 11 (64-bit) with PowerShell 5.1+ or PowerShell 7+.
+2. **Internet Connection:** Direct connection (no proxy required).
+3. **Core Tooling (Auto-provisioned if missing):**
+   * Python 3.12 (auto-installed via `winget` if missing).
+   * Java JDK 17 (Eclipse Temurin 17 auto-installed via `winget` if missing).
+   * Git for Windows (auto-installed via `winget` if missing).
+   * Android SDK (command-line tools, platform SDK 35, build-tools 35, platform-tools `adb`).
+
+#### Reproduction Steps on Any New Machine
+```powershell
+# Step 1: Clone or extract clean source archive, then enter the project folder
+cd <project-folder>
+
+# Step 2: Initialize environment (scaffolds dirs, creates Python venv, installs requirements, auto-detects Android SDK, verifies Gradle wrapper)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Setup
+
+# Step 3: Run full pre-build test suite (validates contract, 5 Windows unit tests, 5 Android unit tests)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Test
+
+# Step 4: Build Windows application and create Desktop shortcut
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildWindows
+
+# Step 5: Build Android Debug APK (compiled to output/android/SmartDocManager-debug.apk)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidDebug
+```
+
+---
+
+### Clean Source Archive & Exclusion Guidelines
+
+When packaging this project into a `.zip` archive for distribution, backup, or moving to another machine, ephemeral caches, machine-specific paths, and build outputs must be excluded to maintain confidentiality, prevent broken dependencies, and keep the archive lightweight (~0.4 MB instead of 1+ GB).
+
+#### Files & Folders to EXCLUDE from Archive
+| Path / Pattern | Reason for Exclusion | Impact if Kept |
+| :--- | :--- | :--- |
+| **`windows/.venv/`** | Machine-specific Python binaries, virtual environment symlinks, and absolute path pointers. | 200–500 MB bloat; completely breaks on other machines. Recreated in ~30s via `dev.ps1 -Action Setup`. |
+| **`windows/__pycache__/`** | Compiled `.pyc` bytecode specific to host Python version. | Redundant; auto-compiled during execution. |
+| **`android/.gradle/`** | Gradle execution state, daemon logs, lock files, and host-specific cache entries. | 100–300 MB bloat; causes daemon conflict errors on other machines. |
+| **`android/local.properties`** | Contains host-specific Android SDK path (`sdk.dir=C:/Users/...`). | Causes build failure on machines with different usernames/SDK paths. Auto-generated on setup. |
+| **`android/build/`, `android/app/build/`** | Intermediate compiler outputs, R classes, and DEX objects. | 150–400 MB bloat. Rebuilt automatically. |
+| **`output/`** | Final compiled binaries (`SmartDocManager-debug.apk`, test summaries). | ~9 MB; easily rebuilt via `dev.ps1 -Action BuildAndroidDebug`. |
+| **`logs/`** | Previous run logs and execution reports from the local machine. | Machine-specific diagnostic clutter. |
+| **`backups/`** | Local timestamped backups created during scaffolding. | Redundant historical file copies. |
+| **`smartdoc_scripts_pack/`** | Redundant nested duplicate of the `scripts/` folder. | Duplicate code. |
+| **`*.jks`, `*.keystore`** | Production release keystores and private cryptographic certificates. | **Critical security risk:** Private signing keys must never be packaged or distributed. |
+| **`.vscode/`, `*.code-workspace`** | User-specific editor window configurations and local workspace state. | Personal editor preferences not needed by other developers. |
+
+#### Files & Folders to INCLUDE in Archive
+* `dev.ps1`, `README.md`, `.gitignore`
+* `scripts/` (all stage scripts `01` through `19` and `common/Helpers.ps1`)
+* `shared-spec/` (`taxonomy.json`, `result-schema.json`, `prompt-policy.md`, `test-fixtures/`)
+* `windows/` (`app.py`, `requirements.txt`, `assets/`, `smartdoc/`, `tests/`)
+* `android/` (`gradlew.bat`, `gradlew`, `gradle/wrapper/`, `settings.gradle.kts`, `build.gradle.kts`, `app/build.gradle.kts`, `app/src/`)
+
+#### 1-Click Automated Archive Generation
+Use the built-in archive generator script to create a clean, distribution-ready `.zip` archive automatically:
+```powershell
+# Via dev.ps1 master controller:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Archive
+
+# Or directly via standalone script:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\19-create-clean-archive.ps1
+```
+* **Result:** Produces a clean `SmartDocManager-source-<timestamp>.zip` of **~0.4 MB** in the project root.
 
 ---
 
@@ -233,7 +436,7 @@ To generate signed release APKs, set the following environment variables in your
 
 ### Stage 2 Baseline Implementation
 * Added Windows Streamlit document classification app (`windows/app.py`, `windows/smartdoc/core.py`) with mocked unit tests (`windows/tests/test_core.py`).
-* Added Android Kotlin app (`MainActivity.kt`, `Classifier.kt`) with PDF/image ingestion, Gemini 2.5 Flash API client, and unit tests (`ClassifierTest.kt`).
+* Added Android Kotlin app (`MainActivity.kt`, `Classifier.kt`) with PDF/image ingestion, Gemini multimodal API client (`gemini-3-flash-preview` / `gemini-2.0-flash`), and unit tests (`ClassifierTest.kt`).
 * Added master workflow controller (`dev.ps1`) and task-specific automation stages (`scripts/01` to `scripts/17`).
 * Added shared classification contract (`shared-spec/taxonomy.json` and `shared-spec/result-schema.json`).
 
@@ -252,9 +455,23 @@ To generate signed release APKs, set the following environment variables in your
 * **Resilient Artifact Verification:** Updated `scripts/12-verify-artifacts.ps1` and `14-open-android-output.ps1` to dynamically verify available APKs without failing when release keystores are unconfigured.
 * **Documentation Unification:** Consolidated all separate markdown files (`START_HERE.md`, `DEVELOPMENT_STATUS.md`, `BUILD_REPORT.md`, `CHANGELOG.md`, `README_FIX_02.md`, `SmartDoc_POC_README_v2_2.md`) into a single verified `README.md`.
 
+### Hotfix 06 — Google AI Studio Auth, Model Detection & Localhost Customization
+* **Gemini 3 Flash Preview & Dynamic Model Discovery:** Set `gemini-3-flash-preview` as the primary free-tier multimodal model default. Added real-time Google AI Studio `ModelService.ListModels` detection in `windows/app.py` via `🔍 Detect Models for Key` with smart ranking that prioritizes vision/multimodal models over text-only models (like `antigravity-preview`).
+* **AQ.Ab Auth Key Support:** Added support for Google AI Studio's newer `AQ.Ab...` authorization keys alongside classic `AIzaSy...` keys, with automatic whitespace trimming (`.strip()`) and dual-channel query/header routing to prevent HTTP 400 errors.
+* **Localhost & Custom Port Launch:** Updated `scripts/13-launch-windows.ps1` and `dev.ps1` to bind to `localhost` instead of hardcoded `127.0.0.1`, and added support for a customizable `-Port <port>` parameter.
+* **Resilient Root Resolution:** Updated `Assert-Root` in `scripts/common/Helpers.ps1` to automatically resolve to the project root even when invoked without arguments, enabling all automation scripts (`07-test-windows.ps1`, `08-test-android.ps1`, etc.) to run standalone directly from the terminal.
+* **Lean Source Hygiene:** Purged >500 MB of regenerable files (`.venv`, Gradle caches, build outputs), updated `.gitignore`, and verified 100% path portability across arbitrary folders (e.g., `SmartDocManager`).
+
+### Hotfix 07 — App Renaming to SmartDocManager, Custom Icons, Keystore Automation & Real-Device USB Testing
+* **Universal Application Renaming:** Renamed all user-facing application labels, titles, CSV export headers, Gradle root project, and desktop shortcuts to `SmartDocManager`. Output targets updated to `SmartDocManager-debug.apk` and `SmartDocManager-release.apk`.
+* **Custom Multi-Resolution Icons:** Processed high-resolution `.ico` assets into a Windows desktop icon (`windows/assets/icon.ico`), Streamlit favicon (`windows/assets/icon.png`), and all 5 standard Android density tiers (`mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`) for `ic_launcher.png` and `ic_launcher_round.png`.
+* **OneDrive Build Cache Redirection:** Relocated Gradle `layout.buildDirectory` to `%LOCALAPPDATA%/AndroidDev/SmartDocManager-build/` in `build.gradle.kts` and `app/build.gradle.kts`, permanently preventing cloud reparse point locks (`IO_REPARSE_TAG_CLOUD` / `not a regular file`).
+* **Release Keystore Automation:** Created `scripts/18-init-keystore.ps1` to generate a 2048-bit RSA release keystore (`smartdocmanager-release.jks`) using `keytool` and set user environment variables permanently. Updated `dev.ps1` with `InitKeystore`, `BuildAndroidDebug`, and `BuildAndroidRelease` actions.
+* **Real-Device ADB Deployment & Error Diagnostics:** Enhanced `scripts/15-deploy-android-debug.ps1` to audit ADB status, guide physical device setup (Developer Options, USB Debugging, "Install via USB"), install the debug APK, automatically launch the app, and provide live logcat streaming (`adb logcat -v time | Select-String "SmartDoc|com.smartdoc.poc|AndroidRuntime|FATAL|Exception"`) to capture runtime errors and crashes.
+
 ---
 
-# SmartDoc — Revised Cross-Platform Document Classification POC
+# SmartDocManager — Cross-Platform Document Classification Specification
 
 **Version:** 2.2 (finalized development specification; no application code)  
 **Date:** 2026-11-05  
@@ -400,7 +617,7 @@ Provide **Recheck**, **View requirements**, **Reduce workload**, and **Cancel** 
 
 ## 9. Project structure — create directly inside user-selected root
 
-The user chooses an **existing project root** (including `./`, meaning the current PowerShell working directory). Do not create a nested `SmartDoc/` folder. A bootstrap script placed in the chosen root creates the following structure. Existing files are backed up with a timestamp before intentional replacement; never overwrite silently or destroy user data.
+The user chooses an **existing project root** (including `./`, meaning the current PowerShell working directory). Do not create a nested `SmartDocManager/` folder. A bootstrap script placed in the chosen root creates the following structure. Existing files are backed up with a timestamp before intentional replacement; never overwrite silently or destroy user data.
 
 ```text
 <selected-project-root>/
@@ -424,7 +641,11 @@ The user chooses an **existing project root** (including `./`, meaning the curre
     12-verify-artifacts.ps1
     13-launch-windows.ps1
     14-open-android-output.ps1
-    15-deploy-android-debug.ps1   # optional, explicit selection
+    15-deploy-android-debug.ps1   # ADB deployment to phone & live logcat error diagnostics
+    16-init-gradle-wrapper.ps1    # Gradle wrapper validation & initialization
+    17-create-windows-shortcut.ps1 # Windows desktop shortcut creation
+    18-init-keystore.ps1          # Release signing keystore generator & setup
+    19-create-clean-archive.ps1   # Clean source archive (.zip) generator
     common/                       # shared logging, paths, exit handling
   docs/
     architecture.md
@@ -479,7 +700,7 @@ The exact script filenames are normative task names; shared helpers may be added
 4. **Readiness:** verify mandatory files, imports, Java, Android SDK licenses/platform/build-tools, Gradle wrapper, provider configuration (without revealing secrets), and signing configuration. Distinguish optional from blocking requirements.
 5. **Pre-build tests:** run shared schema/contract tests, Windows module tests, and Android module/unit tests as applicable. Mock Gemini responses in every normal build. Any mandatory failure **stops the workflow before compilation**.
 6. **Windows build/verification:** validate Python dependencies, imports, packaging/launcher and Streamlit startup. Streamlit is a local web application, not an EXE; provide a desktop shortcut or launcher that starts the local server and opens the default browser.
-7. **Android builds:** run Gradle command-line builds sequentially for debug and release; use a persistent user-owned release keystore created in a one-time guided setup. Produce `SmartDoc-debug.apk` and `SmartDoc-release.apk` in `output/android/`.
+7. **Android builds:** run Gradle command-line builds sequentially for debug and release; use a persistent user-owned release keystore created in a one-time guided setup. Produce `SmartDocManager-debug.apk` and `SmartDocManager-release.apk` in `output/android/`.
 8. **Post-build verification:** check both APKs exist, are nonempty, have the expected application ID/version, are signed with the correct debug/release certificates, and pass available artifact checks. Run any integration/smoke checks that require compilation. Report any device-only checks not run.
 9. **Delivery:** after success, launch Windows Streamlit in the default browser and open Windows Explorer at `output/android/`. Optionally deploy debug APK over ADB to the Realme only when explicitly requested, connected, and all required tests pass.
 

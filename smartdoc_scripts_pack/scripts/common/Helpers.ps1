@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 function Assert-Root([string]$Root) {
+ if (-not $Root) {
+     $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+ }
  if (-not (Test-Path -LiteralPath $Root -PathType Container)) { throw "Project root does not exist: $Root" }
  return (Resolve-Path -LiteralPath $Root).Path
 }
@@ -10,7 +13,7 @@ function Invoke-Checked([string]$Exe,[string[]]$Arguments) {
  & $Exe @Arguments
  if ($LASTEXITCODE -ne 0) { throw "Command failed (exit $LASTEXITCODE): $Exe $($Arguments -join ' ')" }
 }
-function Write-Status([string]$Message) { Write-Host "[SmartDoc] $Message" }
+function Write-Status([string]$Message) { Write-Host "[SmartDocManager] $Message" }
 function Backup-IfChanged([string]$Path,[string]$Content,[string]$Root) {
  if (Test-Path -LiteralPath $Path) {
   $existing = [IO.File]::ReadAllText($Path)

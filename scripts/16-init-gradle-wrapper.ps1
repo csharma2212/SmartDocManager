@@ -1,6 +1,7 @@
 param([string]$Root)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/common/Helpers.ps1"
+$Root = Assert-Root $Root
 $android = Join-Path $Root 'android'
 if (-not (Test-Path -LiteralPath $android -PathType Container)) { throw "Android project directory missing: $android" }
 $wrapperDir = Join-Path $android 'gradle/wrapper'

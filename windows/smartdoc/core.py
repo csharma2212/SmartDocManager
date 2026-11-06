@@ -53,8 +53,10 @@ def classify(filename,data,key,model,session=None):
     result=Result(Filename=filename)
     try:
         image=render(data,filename)
-        if not key: raise ValueError('Gemini API key missing')
-        if not model: raise ValueError('Gemini model missing')
+        clean_key = str(key).strip()
+        if not clean_key: raise ValueError('Gemini API key missing')
+        clean_model = model.replace('models/', '').strip()
+        if not clean_model: raise ValueError('Gemini model missing')
         import base64, requests
         client=session or requests
         prompt=('Classify the document image into exactly one category: '+', '.join(CATEGORIES)+'. '
@@ -64,18 +66,29 @@ def classify(filename,data,key,model,session=None):
                 'Specifics must be a short explanation based on visible evidence, without reproducing personal identifiers.')
         payload={'contents':[{'parts':[{'text':prompt},{'inline_data':{'mime_type':'image/jpeg','data':base64.b64encode(image).decode('ascii')}}]}],
                  'generationConfig':{'temperature':0,'responseMimeType':'application/json'}}
-        response=client.post('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',
-                             headers={'x-goog-api-key':key,'Content-Type':'application/json'},json=payload,timeout=75)
+        url = 'https://generativelanguage.googleapis.com/v1beta/models/' + clean_model + ':generateContent?key=' + clean_key
+        response = client.post(url, headers={'Content-Type': 'application/json', 'x-goog-api-key': clean_key}, json=payload, timeout=75)
         if response.status_code!=200:
             result.Status='API_ERROR'
-            result.Specifics='Gemini request failed (HTTP '+str(response.status_code)+').'
-        else:
-            text=response.json()['candidates'][0]['content']['parts'][0]['text']
+            err_msg=''
             try:
+                if hasattr(response, 'json'):
+                    err_data = response.json()
+                    if isinstance(err_data, dict) and 'error' in err_data:
+                        err_msg = ': ' + err_data['error'].get('message', '')
+                elif hasattr(response, 'text') and response.text:
+                    err_msg = ': ' + str(response.text)[:200]
+            except Exception:
+                pass
+            result.Specifics='Gemini request failed (HTTP '+str(response.status_code)+')'+err_msg
+        else:
+            try:
+                resp_json = response.json()
+                text = resp_json['candidates'][0]['content']['parts'][0]['text']
                 result.Category,result.Specifics=validate(json.loads(text))
                 result.Status='UNCATEGORIZABLE' if result.Category==FALLBACK else 'OK'
-            except (ValueError,KeyError,TypeError,IndexError,json.JSONDecodeError):
-                result.Status='INVALID_RESPONSE';result.Specifics='Provider returned an invalid classification.'
+            except (ValueError,KeyError,TypeError,IndexError,json.JSONDecodeError) as parse_err:
+                result.Status='INVALID_RESPONSE';result.Specifics=f'Provider returned an invalid classification ({parse_err}).'
     except ValueError as exc:
         result.Status='INPUT_ERROR';result.Specifics=str(exc)
     except Exception:

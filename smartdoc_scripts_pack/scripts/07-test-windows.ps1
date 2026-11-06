@@ -1,5 +1,6 @@
 param([string]$Root)
 . "$PSScriptRoot/common/Helpers.ps1"
+$Root = Assert-Root $Root
 $py=Join-Path $Root 'windows/.venv/Scripts/python.exe'
 Need-File $py
 Need-File (Join-Path $Root 'windows/app.py')

@@ -1,5 +1,6 @@
 param([string]$Root)
 . "$PSScriptRoot/common/Helpers.ps1"
+$Root = Assert-Root $Root
 foreach($name in @('python','java','git','winget','adb')){
  $c=Get-Command $name -ErrorAction SilentlyContinue
  Write-Status "$name : $(if($c){$c.Source}else{'MISSING'})"

@@ -1,5 +1,6 @@
 param([string]$Root)
 . "$PSScriptRoot/common/Helpers.ps1"
+$Root = Assert-Root $Root
 foreach($f in @('shared-spec/taxonomy.json','shared-spec/result-schema.json','windows/app.py','windows/smartdoc/core.py','windows/requirements.txt','android/app/build.gradle.kts','android/settings.gradle.kts','android/app/src/main/AndroidManifest.xml')){Need-File (Join-Path $Root $f)}
 Need-Command 'python'
 Write-Status 'Source structure verified. Build-specific tools checked in their respective test/build stages.'

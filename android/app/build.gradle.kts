@@ -3,6 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val localBuildDir = System.getenv("LOCALAPPDATA")?.let { "$it/AndroidDev/SmartDocManager-build/app" }
+if (localBuildDir != null) {
+    layout.buildDirectory.set(file(localBuildDir))
+}
+
 android {
     namespace = "com.smartdoc.poc"
     compileSdk = 35

@@ -55,10 +55,10 @@ private fun prepareImage(context:Context, uri:android.net.Uri):ByteArray {
 
 @Composable fun Screen() {
     val context=LocalContext.current
-    val prefs=remember { context.getSharedPreferences("smartdoc_poc",Context.MODE_PRIVATE) }
+    val prefs=remember { context.getSharedPreferences("smartdocmanager",Context.MODE_PRIVATE) }
     var acknowledged by remember { mutableStateOf(prefs.getBoolean("ack",false)) }
     var key by remember { mutableStateOf("") } // never store plaintext key on disk
-    var model by remember { mutableStateOf("gemini-2.5-flash") }
+    var model by remember { mutableStateOf("gemini-3-flash-preview") }
     var status by remember { mutableStateOf("") }
     var results by remember { mutableStateOf(listOf<Classifier.Result>()) }
     var progress by remember { mutableIntStateOf(0) }
@@ -94,7 +94,7 @@ private fun prepareImage(context:Context, uri:android.net.Uri):ByteArray {
         }
     }
     MaterialTheme { Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-        Text("SmartDoc POC",style=MaterialTheme.typography.headlineMedium)
+        Text("SmartDocManager",style=MaterialTheme.typography.headlineMedium)
         Text("Cloud mode: documents are sent to Google Gemini. Only use approved, synthetic or redacted documents.")
         if(!acknowledged) {
             Text("Free-tier data may be used by the provider. Do not upload sensitive or company-controlled files without authorization.")

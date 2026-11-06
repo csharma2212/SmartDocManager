@@ -1,5 +1,6 @@
 param([string]$Root)
 . "$PSScriptRoot/common/Helpers.ps1"
+$Root = Assert-Root $Root
 Need-Command 'winget'
 $packages=@(@('python','Python.Python.3.12'),@('java','EclipseAdoptium.Temurin.17.JDK'),@('git','Git.Git'))
 foreach($entry in $packages){
