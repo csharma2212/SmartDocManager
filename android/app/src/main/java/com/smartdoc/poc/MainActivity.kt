@@ -57,12 +57,19 @@ private fun prepareImage(context:Context, uri:android.net.Uri):ByteArray {
     val context=LocalContext.current
     val prefs=remember { context.getSharedPreferences("smartdocmanager",Context.MODE_PRIVATE) }
     var acknowledged by remember { mutableStateOf(prefs.getBoolean("ack",false)) }
-    var key by remember { mutableStateOf("") } // never store plaintext key on disk
+    var key by remember { mutableStateOf("") }
+    var useHosted by remember { mutableStateOf(false) }
+    var backendUrl by remember { mutableStateOf("") }
+    var backendToken by remember { mutableStateOf("") } // never store plaintext key on disk
     var model by remember { mutableStateOf("gemini-3-flash-preview") }
     var status by remember { mutableStateOf("") }
     var results by remember { mutableStateOf(listOf<Classifier.Result>()) }
     var progress by remember { mutableIntStateOf(0) }
     var lowResources by remember { mutableStateOf(false) }
+    var offlineRequested by remember { mutableStateOf(prefs.getBoolean("offline_requested",false)) }
+    var offlineProfile by remember { mutableStateOf("E2B") }
+    var availableRamGb by remember { mutableStateOf(0.0) }
+    var availableStorageGb by remember { mutableStateOf(0.0) }
     val scope= rememberCoroutineScope()
     val checkResources: () -> Unit = {
     val info = ActivityManager.MemoryInfo()
@@ -74,6 +81,8 @@ private fun prepareImage(context:Context, uri:android.net.Uri):ByteArray {
     
     val storage = StatFs(context.filesDir.path).availableBytes
     
+    availableRamGb = info.totalMem.toDouble() / (1024.0*1024*1024)
+    availableStorageGb = storage.toDouble() / (1024.0*1024*1024)
     lowResources = info.lowMemory || 
         storage < 150L * 1024 * 1024
         
@@ -87,7 +96,7 @@ private fun prepareImage(context:Context, uri:android.net.Uri):ByteArray {
             for((index,uri) in uris.withIndex()) {
                 val name=uri.lastPathSegment?.substringAfterLast('/') ?: "document"
                 status="Processing ${index+1}/${uris.size}: $name"
-                val result=withContext(Dispatchers.IO) { try { Classifier.classify(name,prepareImage(context,uri),key,model) } catch(e:Exception) { Classifier.Result(name,specifics="Cannot read document",status="INPUT_ERROR") } }
+                val result=withContext(Dispatchers.IO) { try { if(useHosted) HostedClassifier.classify(name,prepareImage(context,uri),backendUrl,backendToken) else Classifier.classify(name,prepareImage(context,uri),key,model) } catch(e:Exception) { Classifier.Result(name,specifics="Cannot read document",status="INPUT_ERROR") } }
                 results=results+result;progress=index+1
             }
             status="Completed ${uris.size} files"
@@ -100,13 +109,32 @@ private fun prepareImage(context:Context, uri:android.net.Uri):ByteArray {
             Text("Free-tier data may be used by the provider. Do not upload sensitive or company-controlled files without authorization.")
             Button(onClick={prefs.edit().putBoolean("ack",true).apply().also { acknowledged=true }}) { Text("I understand") }
         } else {
-            OutlinedTextField(value=key,onValueChange={key=it},label={Text("Gemini API key (not saved)")},singleLine=true)
+            Row { Checkbox(checked=useHosted,onCheckedChange={useHosted=it});Text("Use hosted AI (no Gemini account)") }
+            if(useHosted) {
+                Text("OCR runs on this phone; extracted text is sent to your backend and Groq. Use only documents authorized for cloud processing.")
+                OutlinedTextField(value=backendUrl,onValueChange={backendUrl=it},label={Text("Backend HTTPS URL")},singleLine=true)
+                OutlinedTextField(value=backendToken,onValueChange={backendToken=it},label={Text("Backend access token (not saved)")},singleLine=true)
+            } else {
+                OutlinedTextField(value=key,onValueChange={key=it},label={Text("Gemini API key (not saved)")},singleLine=true)
+            }
             OutlinedTextField(value=model,onValueChange={model=it},label={Text("Gemini model ID")},singleLine=true)
             Button(onClick = checkResources) {
     Text("Check resources / Recheck")
 }
-            if(lowResources) Text("This app requires minimum space and memory for limited use. Close unused apps or free storage and Recheck.")
-            Button(onClick = {picker.launch(arrayOf("application/pdf","image/png","image/jpeg","image/webp"))},enabled=key.isNotBlank()) { Text("Select and classify documents") }
+            if(lowResources) Text("Low resources for processing. Close unused apps or free storage and recheck.")
+            HorizontalDivider()
+            Text("Optional offline vision AI (installation planning)",style=MaterialTheme.typography.titleMedium)
+            Text("Offline LLM inference is NOT installed or implemented in this build. Enabling this preference does not download a model or classify offline.")
+            Row { Checkbox(checked=offlineRequested,onCheckedChange={ offlineRequested=it; prefs.edit().putBoolean("offline_requested",it).apply() }); Text("I want optional offline model support") }
+            if(offlineRequested) {
+                Text("Gemma 3n E2B: ~3.14 GB model; ~5.91 GB estimated peak memory. E4B: ~4.41 GB model; ~6.98 GB estimated peak memory (Google AI Edge Gallery model manifest). Actual compatibility depends on hardware and runtime.")
+                Row { RadioButton(selected=offlineProfile=="E2B",onClick={offlineProfile="E2B"});Text("E2B")
+                    RadioButton(selected=offlineProfile=="E4B",onClick={offlineProfile="E4B"});Text("E4B") }
+                Text("Device total RAM: %.1f GB; available app storage: %.1f GB".format(availableRamGb,availableStorageGb))
+                Text(if(availableStorageGb < (if(offlineProfile=="E2B") 4.5 else 6.0)) "Storage likely insufficient for selected model + temporary files" else "Storage estimate passes; device compatibility and free RAM still need validation")
+                Text("Cloud classification remains the only available AI backend. No model download is triggered.")
+            }
+            Button(onClick = {picker.launch(arrayOf("application/pdf","image/png","image/jpeg","image/webp"))},enabled=if(useHosted) backendUrl.startsWith("https://") && backendToken.isNotBlank() else key.isNotBlank()) { Text("Select and classify documents") }
             Text(status)
             Text("Processed: $progress")
             for(r in results) { HorizontalDivider();Text("${r.name} — ${r.category}");Text("${r.status}: ${r.specifics}") }

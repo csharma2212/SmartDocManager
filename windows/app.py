@@ -4,6 +4,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 import pandas as pd
 import streamlit as st
 from smartdoc.core import classify, SUPPORTED, MAX_BYTES
+from smartdoc.hosted import classify_hosted
 
 icon_path = Path(__file__).resolve().parent / 'assets' / 'icon.png'
 st.set_page_config(page_title='SmartDocManager', page_icon=str(icon_path) if icon_path.is_file() else None, layout='wide')
@@ -14,6 +15,12 @@ if not st.session_state.get('cloud_ack',False):
     if st.button('I understand and will use approved test documents'):
         st.session_state.cloud_ack=True;st.rerun()
     st.stop()
+st.subheader('AI provider')
+provider=st.radio('Recognition provider', ['Gemini (own API key)', 'Hosted AI (no Gemini account)'], horizontal=True)
+hosted_mode=provider.startswith('Hosted')
+endpoint=st.text_input('Hosted backend HTTPS URL', value=os.environ.get('SMARTDOC_BACKEND_URL','')) if hosted_mode else ''
+access_token=st.text_input('Hosted backend access token', type='password', value=os.environ.get('SMARTDOC_CLIENT_TOKEN','')) if hosted_mode else ''
+if hosted_mode: st.caption('OCR runs locally; extracted document text is transmitted to your configured backend and Groq. Tesseract OCR must be installed on Windows.')
 raw_key=st.text_input('Gemini API key',type='password',value=os.environ.get('GEMINI_API_KEY',''))
 key=raw_key.strip()
 if key and not (key.startswith('AQ.') or key.startswith('AIza')):
@@ -101,14 +108,15 @@ if folder.strip():
     else: st.warning('Folder not found.')
 if 'results' not in st.session_state: st.session_state.results=[]
 if st.button('Classify selected files',disabled=not bool(selected)):
-    if not key: st.error('Enter a Gemini API key.')
+    if not hosted_mode and not key: st.error('Enter a Gemini API key.')
+    elif hosted_mode and (not endpoint or not access_token): st.error('Enter backend HTTPS URL and access token.')
     else:
         st.session_state.results=[]
         progress=st.progress(0);message=st.empty();elapsed=[]
         for index,(name,data) in enumerate(selected):
             remaining=(sum(elapsed)/len(elapsed))*(len(selected)-index) if elapsed else None
             message.write(f'Processing {index+1}/{len(selected)}: {name} | ETA: {remaining:.0f}s' if remaining is not None else f'Processing {index+1}/{len(selected)}: {name}')
-            result=classify(name,data,key,model)
+            result=classify_hosted(name,data,endpoint,access_token) if hosted_mode else classify(name,data,key,model)
             st.session_state.results.append(result)
             elapsed.append(result['Seconds']);progress.progress((index+1)/len(selected))
         message.success('Batch finished. Review statuses for failures.')
@@ -116,3 +124,40 @@ if st.session_state.results:
     frame=pd.DataFrame(st.session_state.results)
     st.dataframe(frame.rename(columns={'Specifics':'What specifics made the POC decide the category','Status':'Processing Status'}),use_container_width=True)
     st.download_button('Export results CSV',frame.to_csv(index=False).encode('utf-8'),'smartdocmanager_results.csv','text/csv')
+
+st.divider()
+st.subheader('Local document inventory (optional)')
+st.caption('Recursive discovery, SHA-256 duplicate detection, search, and conservative rename previews. Inventory remains local; classification still requires the selected Gemini cloud provider.')
+from smartdoc.manager import inventory, rename_preview, apply_renames, save_index
+root=st.text_input('Folder to inventory recursively',key='inventory_folder')
+if st.button('Scan local folder',disabled=not bool(root.strip())):
+    try:
+        st.session_state.inventory=inventory(Path(root))
+    except Exception as exc:
+        st.error(f'Inventory failed: {exc}')
+if st.session_state.get('inventory') is not None:
+    records=st.session_state.inventory
+    st.write(f'{len(records)} supported files, {sum(bool(r["duplicate_of"]) for r in records)} exact duplicates')
+    term=st.text_input('Search filenames and paths').lower()
+    st.dataframe(pd.DataFrame([r for r in records if term in r['path'].lower()]),use_container_width=True)
+    st.download_button('Download local inventory JSON',__import__('json').dumps(records,indent=2),'smartdoc_inventory.json','application/json')
+    # Associate existing classification results with matching unique filenames only.
+    counts={}
+    for r in st.session_state.results: counts[r['Filename']]=counts.get(r['Filename'],0)+1
+    by_name={r['Filename']:r['Category'] for r in st.session_state.results if r['Status']=='OK' and counts[r['Filename']]==1}
+    categories={r['path']:by_name[r['name']] for r in records if r['name'] in by_name}
+    proposals=rename_preview(records,categories)
+    if proposals:
+        st.caption('Renames use category labels only; no sensitive document contents are embedded in filenames. Duplicates and already-prefixed names are skipped.')
+        st.dataframe(pd.DataFrame(proposals),use_container_width=True)
+        approved=st.checkbox('I reviewed the preview and authorize renaming these files',value=False)
+        if st.button('Apply reviewed renames',disabled=not approved or any(x['conflict'] for x in proposals)):
+            try:
+                changed=apply_renames(proposals)
+                st.success(f'Renamed {len(changed)} files. Rescan to refresh the inventory.')
+            except Exception as exc: st.error(f'Rename failed: {exc}')
+    if st.button('Save local index JSON'):
+        try:
+            output=save_index(Path(root)/'.smartdoc-index.json',records,by_name)
+            st.success(f'Saved {output}')
+        except Exception as exc: st.error(str(exc))

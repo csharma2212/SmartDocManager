@@ -7,7 +7,7 @@ import android.util.Base64
 
 object Classifier {
     const val FALLBACK = "uncategorizable input"
-    val categories = setOf("Medical Record", "Government-issued Document", "Organization-issued ID Card", "Legal Document", FALLBACK)
+    val categories = linkedSetOf("Medical Record", "Government-issued Document", "Organization-issued ID Card", "Legal Document", "Educational Document", "Tax Document", "Investment Statement", "Bank Statement", "Credit Card Statement", "Bill or Invoice", "Payment Receipt", "Insurance Document", "Vehicle Document", "Employment Document", "Property or Rental Document", "Utility or Telecom Document", "Travel Document", "Other Document", "uncategorizable input")
     data class Result(val name:String, val category:String=FALLBACK, val specifics:String="", val status:String="PROCESSING_ERROR")
     fun validate(category:String):Boolean = category in categories
     fun classify(name:String, image:ByteArray, apiKey:String, model:String):Result {
@@ -16,7 +16,7 @@ object Classifier {
         if(cleanApiKey.isBlank() || cleanModel.isBlank()) return Result(name,specifics="Missing API key or model",status="INPUT_ERROR")
         var connection:HttpURLConnection? = null
         return try {
-            val prompt="Classify document into exactly one category: ${categories.joinToString()}. Government citizen IDs take precedence over organization IDs; employer/student badges are organization-issued. Use uncategorizable input for blank, unclear or unrelated documents. Do not invent details or repeat personal identifiers. Return only JSON object with category and specifics (short visible evidence)."
+            val prompt="Classify document into exactly one category: ${categories.joinToString()}. Government citizen IDs take precedence over organization IDs; employer/student badges are organization-issued. Use Other Document for legible documents outside the named types; use uncategorizable input for blank or unclear inputs. Tax forms (Form 16/TDS) are Tax Document, mutual fund/stock records are Investment Statement, bank and credit card statements are distinct, and invoices differ from receipts. Do not invent details or repeat personal identifiers. Return only JSON object with category and specifics (short visible evidence)."
             val parts=org.json.JSONArray().put(JSONObject().put("text",prompt)).put(JSONObject().put("inline_data",JSONObject().put("mime_type","image/jpeg").put("data",Base64.encodeToString(image,Base64.NO_WRAP))))
             val body=JSONObject().put("contents",org.json.JSONArray().put(JSONObject().put("parts",parts))).put("generationConfig",JSONObject().put("temperature",0).put("responseMimeType","application/json"))
             connection=(URL("https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent?key=$cleanApiKey").openConnection() as HttpURLConnection)

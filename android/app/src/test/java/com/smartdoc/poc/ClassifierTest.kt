@@ -34,8 +34,8 @@ class ClassifierTest {
     }
 
     @Test
-    fun allFiveCategoriesPresent() {
-        assertEquals(5, Classifier.categories.size)
+    fun expandedCategoriesPresent() {
+        assertEquals(19, Classifier.categories.size)
         assertTrue(Classifier.categories.containsAll(listOf(
             "Medical Record",
             "Government-issued Document",

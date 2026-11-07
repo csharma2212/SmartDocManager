@@ -3,7 +3,7 @@ from dataclasses import dataclass, asdict
 from PIL import Image, ImageOps
 import pypdfium2 as pdfium
 
-CATEGORIES = ('Medical Record', 'Government-issued Document', 'Organization-issued ID Card', 'Legal Document', 'uncategorizable input')
+CATEGORIES = ('Medical Record', 'Government-issued Document', 'Organization-issued ID Card', 'Legal Document', 'Educational Document', 'Tax Document', 'Investment Statement', 'Bank Statement', 'Credit Card Statement', 'Bill or Invoice', 'Payment Receipt', 'Insurance Document', 'Vehicle Document', 'Employment Document', 'Property or Rental Document', 'Utility or Telecom Document', 'Travel Document', 'Other Document', 'uncategorizable input')
 FALLBACK = CATEGORIES[-1]
 MAX_BYTES = 20 * 1024 * 1024
 SUPPORTED = ('.pdf','.png','.jpg','.jpeg','.webp')
@@ -62,6 +62,8 @@ def classify(filename,data,key,model,session=None):
         prompt=('Classify the document image into exactly one category: '+', '.join(CATEGORIES)+'. '
                 'If unclear, blank, unreadable or out of scope use uncategorizable input. '
                 'Government-issued citizen credentials take precedence over organization badges; employer or student IDs are organization-issued. '
+                'Tax documents include Form 16 and TDS certificates; investment statements include mutual fund and brokerage records; distinguish bank from credit card statements; distinguish invoices from receipts. '
+                'Use Other Document only when legible but no specific category applies. '
                 'Do not invent text, identifiers, or evidence. Return ONLY JSON object with keys category and specifics. '
                 'Specifics must be a short explanation based on visible evidence, without reproducing personal identifiers.')
         payload={'contents':[{'parts':[{'text':prompt},{'inline_data':{'mime_type':'image/jpeg','data':base64.b64encode(image).decode('ascii')}}]}],

@@ -1,8 +1,82 @@
 # SmartDocManager — Cross-Platform Document Classification System
 
-> **Status:** Stage 2 Verified Implementation Candidate  
+> **Status:** Enhanced source-code candidate; not a complete offline-capable release  
 > **Platform Support:** Windows 11 Desktop (Streamlit) & Android Native APK (Kotlin, Jetpack Compose)  
-> **Verification Status:** Windows Unit Tests (5/5 PASSED), Android Unit Tests (5/5 PASSED), Debug APK (BUILT & VERIFIED)
+> **Current verification:** 10 Windows tests passed in this environment; Android tests, Gradle build, and APK generation have **not** been run for this revision. Historical build claims below apply to the original archive only.
+
+---
+
+## November 2026 enhancement: implemented features, limitations, and offline research
+
+**Compatibility:** Existing Gradle, Kotlin, Android SDK, Python requirements, and version pins/ranges have been retained. No new runtime dependencies have been installed. The original application identifiers and cloud API remain unchanged. This archive is **not a finished implementation of every requested feature**.
+
+### Expanded shared document taxonomy (19 categories)
+
+Medical Record; Government-issued Document; Organization-issued ID Card; Legal Document; Educational Document (degrees, marksheets, certificates, report cards); Tax Document (Form 16, TDS); Investment Statement (stocks, mutual funds); Bank Statement; Credit Card Statement; Bill or Invoice; Payment Receipt; Insurance Document; Vehicle Document; Employment Document; Property or Rental Document; Utility or Telecom Document; Travel Document; Other Document; uncategorizable input.
+
+The taxonomy and JSON schema have been synchronized with the Windows and Android classifier prompts and validation. An LLM may still make mistakes; taxonomy support is not a guarantee of accuracy.
+
+### What this revision actually implements
+
+| Feature | Windows | Android |
+|---|---|---|
+| Expanded 19-category cloud classification | Source updated; mock-tested | Source updated; not compiled |
+| Recursive local document discovery | Manual scan of selected directory | Not implemented |
+| Exact duplicate detection (SHA-256) | Implemented in local inventory | Not implemented |
+| Search local document inventory | Filename/path filter | Not implemented |
+| Category-based rename preview | Implemented; manual approval required | Not implemented |
+| Rename application | Opt-in copy-and-verify operation | Not implemented |
+| Local JSON inventory | Implemented | Not implemented |
+| Multi-page PDF understanding | Not implemented (first page only) | Not implemented (first page only) |
+| Offline document classification | Not implemented | Not implemented |
+| Offline model opt-in / sizing UI | Not implemented | Preference and size/resource information only; **no inference/download** |
+| Incremental background scans / persistent indexing | Not implemented | Not implemented |
+
+**Important:** Do not interpret the offline preference checkbox as an installed or working offline model. The Android app currently requires a Gemini API key and network access for actual classification. Do not distribute it as an offline-capable APK.
+
+### Recommended offline architecture: research and implementation plan
+
+The recommended *future* runtime is **Google LiteRT-LM**, not the legacy MediaPipe LLM Inference API (maintenance-only). LiteRT-LM supports on-device multimodal image input, Android acceleration, and models including Gemma. Keep the existing cloud classifier behind a `DocumentClassifier` interface, then add a separate opt-in offline module with a pinned and device-tested LiteRT-LM release. Do **not** use `latest.release` in a reproducible production build. Android ML Kit OCR can be an additional local extraction/fallback stage, but OCR alone is not a vision-language classifier and must not be marketed as one.
+
+References (official):
+- https://developers.google.com/edge/litert-lm/overview
+- https://developers.google.com/edge/mediapipe/solutions/genai/llm_inference/android (migration warning)
+- https://developers.google.com/edge/litert/overview (Android dependencies and deployment)
+- https://github.com/google-ai-edge/gallery/blob/main/model_allowlist.json (example model sizes and peak memory)
+- https://deepmind.google/models/gemma/gemma-3n/ (multimodal capabilities)
+
+**Candidate model sizes from Google AI Edge Gallery's preview manifest** (not universal minimums):
+
+| Model | Download size | Estimated peak memory | Conservative device planning |
+|---|---:|---:|---|
+| Gemma 3n E2B int4 vision | 3,136,226,711 bytes (~2.92 GiB) | 5,905,580,032 bytes (~5.50 GiB) | ~8 GB total RAM and 4.5 GB free storage recommended for evaluation |
+| Gemma 3n E4B int4 vision | 4,405,655,031 bytes (~4.10 GiB) | 6,979,321,856 bytes (~6.50 GiB) | ~12 GB total RAM and 6 GB free storage recommended for evaluation |
+
+These are **planning recommendations**, not verified hard minimums. Model runtime format, OS memory pressure, GPU/NPU compatibility, page resolution, and concurrent apps affect results. The cited `.task` preview assets are not automatically interchangeable with every LiteRT-LM release; verify a compatible model artifact and exact API before adding dependencies. Never ship multi-gigabyte model weights inside the base APK. Provide optional model downloads with user consent, license display, Wi-Fi choice, disk-space check, SHA-256 integrity verification, resumable transfer, explicit uninstall, and no automatic cloud fallback in offline mode.
+
+**Implementation steps for a production-ready offline feature:**
+
+1. Add a separate Android Gradle feature/module with a *verified, pinned* `com.google.ai.edge.litertlm:litertlm-android` version and compatible model artifact; leave existing dependency versions untouched.
+2. Add a `ClassifierBackend` abstraction and user-selectable `Cloud`, `Offline`, or `Ask each time` policy. An explicit offline selection must never call Gemini.
+3. Create a consented model manager: metadata, license, download URL, checksums, storage budget, compatibility probe, pause/resume, delete and rollback. Keep models in private app storage.
+4. Render multiple PDF pages with bounded page count and memory; perform on-device OCR where beneficial; pass visual page data to the actual multimodal runtime; use strict schema validation and a low-confidence fallback.
+5. Use Android Storage Access Framework `ACTION_OPEN_DOCUMENT_TREE` for folder grants; persist URI permission, maintain a local Room index, scan incrementally in batches of 10, hash only changed documents, and avoid silent renames of meaningful filenames or photos.
+6. For SAF rename operations use `DocumentsContract.renameDocument` with explicit user approval, collision handling, stable URI updates, and rollback/error reporting. For Windows, maintain a file identity/mtime check between preview and mutation.
+7. Test E2B and E4B on representative physical devices, offline/airplane mode, low-memory conditions, scanned multilingual PDFs, tax/bank/education samples, ambiguous photos, and cloud/offline parity. Record confusion matrices and privacy tests before claiming broad recognition.
+
+**Dependency policy:** No additional dependency was added in this revision because a verified compatible LiteRT-LM runtime/model combination and Android build environment were unavailable. The official documentation illustrates `com.google.ai.edge.litertlm:litertlm-android:latest.release`, but pin a tested version before enabling a production feature. The existing Android `minSdk=26` remains unchanged.
+
+### Running the revised tests
+
+```powershell
+cd windows
+python -m pytest -q tests
+cd ..\android
+.\gradlew.bat testDebugUnitTest
+.\gradlew.bat assembleDebug
+```
+
+The original Gradle wrapper, signing settings, scripts, and dependency declarations are retained. **Do not deploy an APK until Android tests and compilation pass.**
 
 ---
 
@@ -774,3 +848,14 @@ The following facts must be collected by the preflight/setup scripts or supplied
 **Approved v2.2 baseline:** two independent internet-connected apps; Windows Streamlit and native Android; Gemini free-tier candidate; cloud disclosure once at setup without repeated prompts; no offline classification requirement; strict five-category taxonomy with separate processing status; sequential batches with updated ETA; device resource checks; one PowerShell master and task-specific scripts; no Android Studio; mandatory tests before builds; signed debug/release APK outputs; Windows auto-launch and shortcut; stop-on-failure reports; and preserved update data. No application code is part of this document.
 
 The cloud baseline intentionally changes the original local-only privacy promise. Use only synthetic/redacted or otherwise approved documents for free-tier testing, and revisit provider terms, quotas and security architecture before production use.
+
+
+## Hosted AI provider integration (new)
+
+See [HOSTED_AI_IMPLEMENTATION.md](HOSTED_AI_IMPLEMENTATION.md) for backend setup, dependencies, client modes, security constraints, deployment guidance, and known gaps. This is a private-pilot implementation, not a verified production deployment.
+
+---
+
+## Hosted AI backend deployment (Cloudflare Workers / Render / Koyeb)
+
+See **[hosted-backend/DEPLOYMENT.md](hosted-backend/DEPLOYMENT.md)** for the Cloudflare JavaScript Worker, Python FastAPI Docker deployment, secret setup, tests, API contract, rate-limit and privacy limitations. The Worker does not add any Android or Windows dependencies. Its model and credentials are configured on the server. Hosted mode sends locally extracted OCR text to Groq; it is not offline inference.

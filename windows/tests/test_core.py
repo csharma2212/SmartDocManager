@@ -32,3 +32,8 @@ def test_api_failure_distinct():
         def post(self,*a,**kw):return Response()
     result=classify('blank.png',b.getvalue(),'test-key','test-model',Session())
     assert result['Category']==FALLBACK and result['Status']=='API_ERROR'
+
+def test_new_categories():
+    from smartdoc.core import CATEGORIES
+    for item in ('Educational Document','Tax Document','Investment Statement','Bank Statement','Credit Card Statement','Bill or Invoice'):
+        assert validate({'category':item,'specifics':'test'})[0]==item

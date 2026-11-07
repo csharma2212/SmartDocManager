@@ -1,0 +1,13 @@
+name = "smartdoc-classifier"
+main = "src/worker.mjs"
+compatibility_date = "2025-06-01"
+
+[vars]
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# Per-IP abuse control. This is not a per-user quota or billing safeguard.
+[[unsafe.bindings]]
+name = "CLASSIFY_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }

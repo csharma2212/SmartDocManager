@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {handle} from '../src/worker.mjs';
+const env={SMARTDOC_CLIENT_TOKEN:'test-secret',GROQ_API_KEY:'fake'};
+const req=(text,token='test-secret')=>new Request('https://example.workers.dev/v1/classify',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({text})});
+test('health',async()=>{const r=await handle(new Request('https://example.workers.dev/health'),env);assert.equal(r.status,200)});
+test('auth required',async()=>{const r=await handle(req('test','wrong'),env);assert.equal(r.status,401)});
+test('no keys configured',async()=>{const r=await handle(req('test'),{});assert.equal(r.status,503)});
+test('empty text rejected',async()=>{const r=await handle(req(''),env);assert.equal(r.status,422)});
+test('oversized text rejected',async()=>{const r=await handle(req('x'.repeat(16001)),env);assert.equal(r.status,422)});
+test('rate limit enforced',async()=>{const r=await handle(req('sample'),{...env,CLASSIFY_LIMITER:{limit:async()=>({success:false})}});assert.equal(r.status,429)});
+test('invalid JSON rejected',async()=>{const r=await handle(new Request('https://example.workers.dev/v1/classify',{method:'POST',headers:{authorization:'Bearer test-secret'},body:'{bad'}),env);assert.equal(r.status,400)});
