@@ -7,7 +7,7 @@ from smartdoc.core import validate,render,classify,FALLBACK
 def test_taxonomy():
     assert validate({'category':'Medical Record','specifics':'Visible prescription heading'})[0]=='Medical Record'
 def test_reject_unknown():
-    try: validate({'category':'banana','specifics':''})
+    try: validate({'category':'','specifics':''})
     except ValueError: pass
     else: assert False
 

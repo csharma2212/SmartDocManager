@@ -1,9 +1,15 @@
-name = "smartdoc-classifier"
+name = "smartdocmanager-api"
 main = "src/worker.mjs"
 compatibility_date = "2025-06-01"
 
 [vars]
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GROQ_MODEL = "openai/gpt-oss-20b"
+USE_GROQ_ONLY = "true"
+GOOGLE_CLIENT_IDS = "492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com,492541392963-b0mf650fohoas9m6a24fa32enrstjrr6.apps.googleusercontent.com"
+GOOGLE_DESKTOP_CLIENT_ID = "492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com"
+ALLOWED_GOOGLE_EMAILS = "csharma2212@gmail.com,*"
+ALLOW_LEGACY_TOKEN = "true"
 
 # Per-IP abuse control. This is not a per-user quota or billing safeguard.
 [[unsafe.bindings]]

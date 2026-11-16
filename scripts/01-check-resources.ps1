@@ -12,6 +12,7 @@ while ($true) {
     if ($freeGb -ge 10 -and $availMb -ge 1024) { exit 0 }
     Write-Warning 'This app requires minimum space and memory for limited use'
     Write-Warning 'Free storage or close unused apps. No apps will be terminated automatically.'
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { exit 0 }
     $choice = Read-Host 'Press R to recheck, C to continue with warning, or X to cancel'
     if ($choice -match '^[Rr]$') { continue }
     if ($choice -match '^[Cc]$') { exit 0 }

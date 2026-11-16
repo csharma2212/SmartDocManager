@@ -2,7 +2,7 @@
 # SmartDocManager — Git Ignore Specification
 # ==============================================================================
 
-# --- Python & Virtual Environments ---
+# --- Python & Desktop Build Artifacts ---
 .venv/
 windows/.venv/
 env/
@@ -18,6 +18,17 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 dist/
+build/
+*.spec
+*.exe
+*.lnk
+
+# --- Local Databases & Metadata ---
+*.sqlite3
+*.sqlite3-journal
+*.db
+*.db-journal
+.smartdocmanager/
 
 # --- Android, Gradle & Native Toolchains ---
 .gradle/
@@ -33,20 +44,35 @@ android/local.properties
 *.iml
 .idea/
 
-# --- Secrets, Credentials & Keystores (Security Critical) ---
+# --- Secrets, Keystores & Fingerprints (Security Critical) ---
+keystores/
 *.jks
 *.keystore
+keystore.properties
+signing.properties
+signing-fingerprints.txt
+*fingerprint*.txt
+*sha1*.txt
+android-credentials.json
 .env
+*.local.json
 *.key
 *.pem
 
-# --- Build Outputs, Execution Logs & Scaffolding Backups ---
+# --- Node.js & Cloudflare ---
+node_modules/
+hosted-backend/cloudflare/node_modules/
+.wrangler/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Build Outputs, Execution Logs & Scaffolding ---
 output/
 logs/
 backups/
-smartdoc_scripts_pack/output/
-smartdoc_scripts_pack/logs/
-smartdoc_scripts_pack/backups/
+diagnostics/*.log
+diagnostics/build-session.log
 *.log
 
 # --- Distribution & Archive Artifacts ---
@@ -56,14 +82,13 @@ smartdoc_scripts_pack/backups/
 *.b64
 *.rar
 
-# --- IDE, Editor & AI Agent Environments ---
+# --- IDE, Editor & OS Caches ---
+.vscode/
 .agents/
 .gemini/
 .claude/
 .cursor/
 *.code-workspace
-
-# --- Operating System Caches & Temporary Files ---
 .DS_Store
 Thumbs.db
 ehthumbs.db
