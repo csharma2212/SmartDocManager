@@ -1,6 +1,6 @@
 param(
     [string]$ProjectRoot = $PSScriptRoot,
-    [ValidateSet('Menu','Setup','Verify','Test','BuildWindows','BuildAndroid','BuildAndroidDebug','BuildAndroidRelease','InitKeystore','BuildAll','LaunchWindows','OpenApks','DeployDebug','Archive')][string]$Action='Menu',
+    [ValidateSet('Menu','Setup','Verify','Test','BuildWindows','BuildInstaller','BuildAndroid','BuildAndroidDebug','BuildAndroidRelease','InitKeystore','BuildAll','LaunchWindows','OpenApks','DeployDebug','Archive')][string]$Action='Menu',
     [int]$Port = 8501,
     [string]$Address = 'localhost'
 )
@@ -41,9 +41,10 @@ function Choose-Action {
  Write-Host " 11  Open APK Output Folder"
  Write-Host " 12  Deploy Debug APK to Phone & Launch (ADB)"
  Write-Host " 13  Create Clean Source Archive (.zip)"
+ Write-Host " 14  Build Windows Setup Installer Wizard (.exe)"
  Write-Host "  0  Exit"
  Write-Host "======================================================================"
- switch (Read-Host 'Choose an action [0-13]') {
+ switch (Read-Host 'Choose an action [0-14]') {
  '1' {'Setup'}
  '2' {'Verify'}
  '3' {'Test'}
@@ -61,6 +62,7 @@ function Choose-Action {
  '11' {'OpenApks'}
  '12' {'DeployDebug'}
  '13' {'Archive'}
+ '14' {'BuildInstaller'}
  '0' {'Exit'}
  default {throw 'Invalid menu selection'}
  }
@@ -88,6 +90,7 @@ try {
  'OpenApks' {Stage '14-open-android-output.ps1'}
  'DeployDebug' {Stage '15-deploy-android-debug.ps1'}
  'Archive' {Stage '19-create-clean-archive.ps1'}
+ 'BuildInstaller' {Stage 'build-installer.ps1'}
  }
  Add-Content -LiteralPath $report -Value 'WORKFLOW SUCCEEDED (selected action)' 
  Write-Host "`nWORKFLOW SUCCEEDED ($Action)" -ForegroundColor Green

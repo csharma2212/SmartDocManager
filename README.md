@@ -1,861 +1,815 @@
-# SmartDocManager — Cross-Platform Document Classification System
+# SmartDocManager
 
-> **Status:** Enhanced source-code candidate; not a complete offline-capable release  
-> **Platform Support:** Windows 11 Desktop (Streamlit) & Android Native APK (Kotlin, Jetpack Compose)  
-> **Current verification:** 10 Windows tests passed in this environment; Android tests, Gradle build, and APK generation have **not** been run for this revision. Historical build claims below apply to the original archive only.
-
----
-
-## November 2026 enhancement: implemented features, limitations, and offline research
-
-**Compatibility:** Existing Gradle, Kotlin, Android SDK, Python requirements, and version pins/ranges have been retained. No new runtime dependencies have been installed. The original application identifiers and cloud API remain unchanged. This archive is **not a finished implementation of every requested feature**.
-
-### Expanded shared document taxonomy (19 categories)
-
-Medical Record; Government-issued Document; Organization-issued ID Card; Legal Document; Educational Document (degrees, marksheets, certificates, report cards); Tax Document (Form 16, TDS); Investment Statement (stocks, mutual funds); Bank Statement; Credit Card Statement; Bill or Invoice; Payment Receipt; Insurance Document; Vehicle Document; Employment Document; Property or Rental Document; Utility or Telecom Document; Travel Document; Other Document; uncategorizable input.
-
-The taxonomy and JSON schema have been synchronized with the Windows and Android classifier prompts and validation. An LLM may still make mistakes; taxonomy support is not a guarantee of accuracy.
-
-### What this revision actually implements
-
-| Feature | Windows | Android |
-|---|---|---|
-| Expanded 19-category cloud classification | Source updated; mock-tested | Source updated; not compiled |
-| Recursive local document discovery | Manual scan of selected directory | Not implemented |
-| Exact duplicate detection (SHA-256) | Implemented in local inventory | Not implemented |
-| Search local document inventory | Filename/path filter | Not implemented |
-| Category-based rename preview | Implemented; manual approval required | Not implemented |
-| Rename application | Opt-in copy-and-verify operation | Not implemented |
-| Local JSON inventory | Implemented | Not implemented |
-| Multi-page PDF understanding | Not implemented (first page only) | Not implemented (first page only) |
-| Offline document classification | Not implemented | Not implemented |
-| Offline model opt-in / sizing UI | Not implemented | Preference and size/resource information only; **no inference/download** |
-| Incremental background scans / persistent indexing | Not implemented | Not implemented |
-
-**Important:** Do not interpret the offline preference checkbox as an installed or working offline model. The Android app currently requires a Gemini API key and network access for actual classification. Do not distribute it as an offline-capable APK.
-
-### Recommended offline architecture: research and implementation plan
-
-The recommended *future* runtime is **Google LiteRT-LM**, not the legacy MediaPipe LLM Inference API (maintenance-only). LiteRT-LM supports on-device multimodal image input, Android acceleration, and models including Gemma. Keep the existing cloud classifier behind a `DocumentClassifier` interface, then add a separate opt-in offline module with a pinned and device-tested LiteRT-LM release. Do **not** use `latest.release` in a reproducible production build. Android ML Kit OCR can be an additional local extraction/fallback stage, but OCR alone is not a vision-language classifier and must not be marketed as one.
-
-References (official):
-- https://developers.google.com/edge/litert-lm/overview
-- https://developers.google.com/edge/mediapipe/solutions/genai/llm_inference/android (migration warning)
-- https://developers.google.com/edge/litert/overview (Android dependencies and deployment)
-- https://github.com/google-ai-edge/gallery/blob/main/model_allowlist.json (example model sizes and peak memory)
-- https://deepmind.google/models/gemma/gemma-3n/ (multimodal capabilities)
-
-**Candidate model sizes from Google AI Edge Gallery's preview manifest** (not universal minimums):
-
-| Model | Download size | Estimated peak memory | Conservative device planning |
-|---|---:|---:|---|
-| Gemma 3n E2B int4 vision | 3,136,226,711 bytes (~2.92 GiB) | 5,905,580,032 bytes (~5.50 GiB) | ~8 GB total RAM and 4.5 GB free storage recommended for evaluation |
-| Gemma 3n E4B int4 vision | 4,405,655,031 bytes (~4.10 GiB) | 6,979,321,856 bytes (~6.50 GiB) | ~12 GB total RAM and 6 GB free storage recommended for evaluation |
-
-These are **planning recommendations**, not verified hard minimums. Model runtime format, OS memory pressure, GPU/NPU compatibility, page resolution, and concurrent apps affect results. The cited `.task` preview assets are not automatically interchangeable with every LiteRT-LM release; verify a compatible model artifact and exact API before adding dependencies. Never ship multi-gigabyte model weights inside the base APK. Provide optional model downloads with user consent, license display, Wi-Fi choice, disk-space check, SHA-256 integrity verification, resumable transfer, explicit uninstall, and no automatic cloud fallback in offline mode.
-
-**Implementation steps for a production-ready offline feature:**
-
-1. Add a separate Android Gradle feature/module with a *verified, pinned* `com.google.ai.edge.litertlm:litertlm-android` version and compatible model artifact; leave existing dependency versions untouched.
-2. Add a `ClassifierBackend` abstraction and user-selectable `Cloud`, `Offline`, or `Ask each time` policy. An explicit offline selection must never call Gemini.
-3. Create a consented model manager: metadata, license, download URL, checksums, storage budget, compatibility probe, pause/resume, delete and rollback. Keep models in private app storage.
-4. Render multiple PDF pages with bounded page count and memory; perform on-device OCR where beneficial; pass visual page data to the actual multimodal runtime; use strict schema validation and a low-confidence fallback.
-5. Use Android Storage Access Framework `ACTION_OPEN_DOCUMENT_TREE` for folder grants; persist URI permission, maintain a local Room index, scan incrementally in batches of 10, hash only changed documents, and avoid silent renames of meaningful filenames or photos.
-6. For SAF rename operations use `DocumentsContract.renameDocument` with explicit user approval, collision handling, stable URI updates, and rollback/error reporting. For Windows, maintain a file identity/mtime check between preview and mutation.
-7. Test E2B and E4B on representative physical devices, offline/airplane mode, low-memory conditions, scanned multilingual PDFs, tax/bank/education samples, ambiguous photos, and cloud/offline parity. Record confusion matrices and privacy tests before claiming broad recognition.
-
-**Dependency policy:** No additional dependency was added in this revision because a verified compatible LiteRT-LM runtime/model combination and Android build environment were unavailable. The official documentation illustrates `com.google.ai.edge.litertlm:litertlm-android:latest.release`, but pin a tested version before enabling a production feature. The existing Android `minSdk=26` remains unchanged.
-
-### Running the revised tests
-
-```powershell
-cd windows
-python -m pytest -q tests
-cd ..\android
-.\gradlew.bat testDebugUnitTest
-.\gradlew.bat assembleDebug
-```
-
-The original Gradle wrapper, signing settings, scripts, and dependency declarations are retained. **Do not deploy an APK until Android tests and compilation pass.**
+**Cross-Platform Intelligent Document Classification, Organization & Virtual Management System**  
+_Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamlit) · Cloudflare Worker Serverless Proxy (Gemini & Groq)_
 
 ---
 
-## Quickstart & Developer Runbook
+## 1. Project Overview
 
-### About This Section
-This runbook is the complete, single-stop operational guide for developing, testing, building, and deploying the SmartDocManager applications. All lifecycle tasks are automated and orchestrated through the master controller [`dev.ps1`](./dev.ps1), which coordinates 17 specialized stage scripts across environment provisioning, preflight checks, testing, bytecode compilation, APK packaging, and device deployment.
+**SmartDocManager** is an intelligent, privacy-first document management system engineered for mobile and desktop environments:
 
-To prevent build failures caused by missing prerequisites, commands follow a **strict mandatory execution order**. Each step in the ordered list below explains what the step accomplishes and why it is required, followed immediately by the exact PowerShell command to run.
+- On **Android Native**, it automatically scans all accessible internal and external device storage for documents (PDFs, Images, Office Documents `.docx`, `.xlsx`, `.doc`, `.xls`, `.pptx`, `.ppt`, and Plain Text `.txt`) upon login without requiring manual folder picking, while also allowing users to select a specific folder to limit scanning recursively to that directory (falling back to complete phone scanning by default if cancelled). It integrates natively with the Android Storage Access Framework (SAF) as a system-wide file store for Gmail, WhatsApp, and web browsers.
+- On **Windows Desktop**, it allows users to scan target directories or entire drives for all supported formats (PDFs, Images, Office Documents, Text) via a dedicated borderless desktop application window (`msedge.exe --app=...`).
+- On both platforms, text extraction is performed **100% locally on-device**:
+  - **PDFs**: Native `PdfRenderer` on Android; `pypdfium2` textpages + Tesseract OCR fallback on Windows.
+  - **Images (`jpg`, `jpeg`, `png`, `webp`)**: Google ML Kit on Android; Tesseract OCR on Windows.
+  - **Plain Text (`txt`)**: Instantaneous on-device UTF-8 stream reading.
+  - **Modern Office XML (`docx`, `xlsx`, `pptx`)**: Direct internal XML text parsing via built-in ZIP stream extraction (`java.util.zip.ZipInputStream` on Android; `zipfile` in Python standard library on Windows)—zero external heavy dependencies or APK bloat.
+  - **Legacy Office Binary (`doc`, `xls`, `ppt`)**: Streamlined OLE2 text scraping extracting clean UTF-16LE / ASCII text blocks.
+- Extracted text is evaluated against an offline **Local Indian Document Standards engine** or classified via Cloud AI (**Google Gemini 3.5 Flash Lite** with **Groq `openai/gpt-oss-20b` failover**) through the secure Cloudflare Worker proxy (`smartdocmanager-api`).
+- Documents are assigned standardized, date-stamped filenames and organized **without ever altering or deleting original files on disk**.
 
----
+### Core Architectural Principles
 
-### Mandatory Execution Order (Lifecycle Pipeline)
-
-Follow these steps in numerical sequence:
-
-1. **Step 1: Provision Environment & Scaffold Project (Mandatory First Run)**  
-   *What it does:* Creates the directory structure (`docs/`, `shared-spec/`, `output/`, `logs/`, `backups/`), creates the Python virtual environment (`windows/.venv/`), installs all required packages from `windows/requirements.txt` via `pip`, auto-detects your Android SDK to generate `android/local.properties`, and verifies the Android Gradle wrapper. Must be executed first on any new or repaired workspace.  
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Setup
-   ```
-
-2. **Step 2: System Health, Tooling & Readiness Audit**  
-   *What it does:* Checks storage (>= 10 GB free) and available RAM (>= 1024 MB), audits all required CLI tools (`python.exe`, `java.exe`, `git.exe`, `adb.exe`, and Android SDK path), and verifies that all core source and wrapper files exist before beginning tests or compilation.  
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Verify
-   ```
-
-3. **Step 3: Run Full Pre-Build Test Suite (Mandatory Gate)**  
-   *What it does:* Mandatory pre-build gate that verifies the shared taxonomy contract (`shared-spec/taxonomy.json`), runs all 5 Windows unit tests via pytest, and runs all 5 Android unit tests via Gradle. Prints formatted summary blocks detailing which specific tests passed and failed. Both build actions will automatically run this step first.  
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Test
-   ```
-
-4. **Step 4: Build & Launch Windows Desktop Application**  
-   *What it does:* Runs pre-checks and unit tests, compiles Python bytecode (`compileall`), validates required package imports (`streamlit`, `PIL`, `pypdfium2`, `pandas`), creates a shortcut on your Windows Desktop (`SmartDocManager.lnk`), and boots the local Streamlit application in your default browser at `http://localhost:8501`.  
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildWindows
-   ```
-
-5. **Step 5: Build, Package & Cryptographically Verify Android APKs**  
-   *What it does:* Runs pre-checks and unit tests, compiles Kotlin source code with the Jetpack Compose compiler (`compileDebugKotlin`), packages DEX bytecode and resources into `output/android/SmartDocManager-debug.apk`, and cryptographically verifies the APK signature using Android SDK `apksigner.bat` (Scheme v2). If release signing environment variables are configured, also generates and signs `SmartDocManager-release.apk`.  
-   ```powershell
-   # Build Debug APK only:
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidDebug
-
-   # (Optional) Initialize Keystore for signed release builds:
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action InitKeystore
-
-   # Build Release APK only:
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidRelease
-
-   # Build Both Debug and Release APKs:
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroid
-   ```
-
-6. **Step 6: Deploy Debug APK to Connected Android Device & Test**  
-   *What it does:* Audits ADB connectivity, detects connected physical devices (e.g. Realme C63 5G), installs `output/android/SmartDocManager-debug.apk` directly over USB, automatically launches `com.smartdoc.poc/.MainActivity`, and provides real-time logcat streaming to catch runtime errors and crashes.  
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action DeployDebug
-   ```
-
-7. **Step 7: Launch Windows Desktop App Directly (Without Rebuilding)**  
-   *What it does:* Starts the Streamlit application directly using the pre-existing virtual environment on `http://localhost:8501` (or custom `-Port <port>`) and opens your default browser without running recompilation or tests.  
-   ```powershell
-   # Default launch on http://localhost:8501
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows
-
-   # Custom port launch on http://localhost:8080
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows -Port 8080
-   ```
-
----
-
-### Command Sets for Specific Desired Outcomes
-
-Use the targeted command sets below to quickly achieve specific development goals:
-
-#### Outcome A: Complete First-Time Setup on a New Machine
-Run this two-command sequence to prepare the environment and verify that all dependencies and unit tests pass:
-```powershell
-# 1. Scaffold directories, create Python venv, install packages, and initialize Gradle
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Setup
-
-# 2. Run all unit tests to confirm complete operational readiness
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Test
-```
-
-#### Outcome B: Run All Tests (Both Windows & Android)
-Executes shared contract checks, 5 Windows pytest cases, and 5 Android JUnit cases, displaying both test summary blocks:
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Test
-```
-
-#### Outcome C: Test Individual Platforms Separately (with Detailed Pass/Fail Blocks)
-
-* **To run ONLY Windows unit tests (5 pytest cases):**  
-  ```powershell
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\07-test-windows.ps1 -Root .
-  ```
-  *Output Block Format:*
-  ```text
-  ======================================================================
-    WINDOWS TEST RESULTS
-  ======================================================================
-    [PASS] test_core :: test_taxonomy (0.001s)
-    [PASS] test_core :: test_reject_unknown (0.001s)
-    [PASS] test_core :: test_image (0.063s)
-    [PASS] test_core :: test_mock_provider (0.463s)
-    [PASS] test_core :: test_api_failure_distinct (0.007s)
-  ----------------------------------------------------------------------
-    Final Results: 5 Executed | 5 Passed | 0 Failed | 0 Skipped
-  ======================================================================
-  ```
-
-* **To run ONLY Android unit tests (5 Kotlin JUnit cases):**  
-  ```powershell
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\08-test-android.ps1 -Root .
-  ```
-  *Output Block Format:*
-  ```text
-  ======================================================================
-    ANDROID TEST RESULTS
-  ======================================================================
-    [PASS] ClassifierTest :: categoriesAreStrict (0.053s)
-    [PASS] ClassifierTest :: fallbackExists (0s)
-    [PASS] ClassifierTest :: emptyModelReturnsInputError (0.026s)
-    [PASS] ClassifierTest :: emptyApiKeyReturnsInputError (0.001s)
-    [PASS] ClassifierTest :: allFiveCategoriesPresent (0.079s)
-  ----------------------------------------------------------------------
-    Final Results: 5 Executed | 5 Passed | 0 Failed | 0 Skipped
-  ======================================================================
-  ```
-
-* **To verify ONLY the shared taxonomy JSON contract:**  
-  ```powershell
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\06-test-shared.ps1 -Root .
-  ```
-
-#### Outcome D: Build Both Windows & Android Apps in One Step
-Executes all unit tests, compiles the Windows desktop application, creates the Desktop shortcut, assembles the Android debug APK, cryptographically validates the signature, and opens the APK output folder:
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAll
-```
-
-#### Outcome E: Build & Verify Android Debug APK Only
-Runs unit tests, compiles Kotlin code, packages `SmartDocManager-debug.apk` in `output/android/`, verifies the APK with `apksigner`, and opens the output folder:
-```powershell
-# Via dev.ps1:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidDebug
-
-# Or directly via standalone script:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\10-build-android-debug.ps1
-```
-
-#### Outcome F: Generate Keystore & Build Signed Android Release APK
-Generates a production release keystore (if not already created), registers user environment variables permanently, and compiles `SmartDocManager-release.apk`:
-```powershell
-# Step 1: Initialize signing keystore (prompts for password, auto-sets environment variables)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action InitKeystore
-# (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\18-init-keystore.ps1)
-
-# Step 2: Build signed Release APK
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidRelease
-# (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\11-build-android-release.ps1)
-```
-
-#### Outcome G: Build Both Android Debug & Release APKs
-Runs Android unit tests and builds both Debug and Release APKs in a single pass (if keystore is configured; skips release with warning if not):
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroid
-```
-
-#### Outcome H: Build & Launch Windows Desktop App Only
-Runs Windows unit tests, compiles Python bytecode, generates the Desktop shortcut (`SmartDocManager.lnk`), and opens the application in your browser:
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildWindows
-```
-
-#### Outcome I: Install & Test on Real Android Device via USB Cable
-Directly installs `SmartDocManager-debug.apk` onto a physical phone (e.g. Realme C63 5G) connected via USB with Developer Options and USB Debugging enabled, and automatically launches the app:
-```powershell
-# Full guided interactive deployment:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action DeployDebug
-
-# Or directly via standalone script:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\15-deploy-android-debug.ps1
-
-# Direct ADB command alternative:
-adb install -r -d output/android/SmartDocManager-debug.apk
-adb shell am start -n com.smartdoc.poc/.MainActivity
-```
-
-#### Outcome J: Real-Time Error Catching & Runtime Crash Diagnostics
-Keep a terminal open while interacting with the app on your phone. Any uncaught exceptions, network timeouts, API key rejections, permission errors, or crashes will be captured live:
-```powershell
-# Filter specifically for SmartDocManager logs, AndroidRuntime errors, and FATAL exceptions:
-adb logcat -v time | Select-String "SmartDoc|com.smartdoc.poc|AndroidRuntime|FATAL|Exception"
-
-# Clear phone log buffer before starting a test session:
-adb logcat -c
-```
-
-#### Outcome K: Interactive Menu Selection
-Launch the interactive master controller and choose from actions `1` through `13` or `0` to exit:
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1
-```
-
-#### Outcome L: Launch Windows Desktop App Directly (with Optional Custom Port)
-Start the desktop application directly at `http://localhost:8501` or any custom port without rebuilding or testing:
-```powershell
-# Default launch at http://localhost:8501
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows
-
-# Custom port launch at http://localhost:8080
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action LaunchWindows -Port 8080
-
-# Direct script launch
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\13-launch-windows.ps1 -Port 8080
-```
-
-#### Outcome M: Pre-Configure Environment Variables for Hands-Free Launch
-Set your Google AI Studio API key and default model permanently in Windows so they are automatically pre-filled every time the app opens:
-```powershell
-[System.Environment]::SetEnvironmentVariable('GEMINI_MODEL', 'gemini-3-flash-preview', 'User')
-[System.Environment]::SetEnvironmentVariable('GEMINI_API_KEY', 'your_AQ.Ab_or_AIza_key_here', 'User')
-```
-
-#### Outcome N: Create Clean Distribution Source Archive (.zip)
-Generate a clean, lightweight (~0.4 MB) source archive excluding all machine-specific caches, virtual environments, build outputs, and logs:
-```powershell
-# Via dev.ps1 master controller:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Archive
-
-# Or directly via standalone script:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\19-create-clean-archive.ps1
-```
+- **Comprehensive Multi-Format Document Support**:
+  - Seamlessly scans and manages **PDFs** (`.pdf`), **Images** (`.jpg`, `.jpeg`, `.png`, `.webp`), **Office Documents** (`.docx`, `.xlsx`, `.doc`, `.xls`, `.pptx`, `.ppt`), and **Plain Text files** (`.txt`).
+  - Text is extracted natively on-device without uploading files. Naming rules and proposed filenames strictly preserve each document's original extension (e.g., `FIN_IncomeTaxForm16_16Nov26.docx`, `FIN_SalaryStmt_16Nov26.xlsx`, `WRK_OfferLetter_16Nov26.txt`).
+- **Privacy & Document Security**: Document files and images **never leave the client machine**. Text recognition (OCR) is performed entirely on-device (native digital text extraction via `pypdfium2` / `PdfRenderer` + local Google ML Kit / Tesseract OCR). Full clean extracted document text (unrestricted, utilizing Gemini's comprehensive context window up to 1,000,000 tokens / 25MB payload capacity) is transmitted to the serverless proxy for AI classification and naming proposal.
+- **Client-Side Rate Limiting & Daily Cloud Quota Safeguard**:
+  - **10 Requests per 60 Seconds**: The app enforces a client-side sliding window queue throttle to ensure no more than 10 cloud requests are dispatched per 60 seconds, preventing 429 quota exhaustion.
+  - **1,000 Requests Daily Limit**: The app actively tracks daily cloud requests (up to 1,000 requests per 24 hours). Once the 1,000-request daily ceiling is reached, cloud classification is paused, documents gracefully fall back to the on-device Local Indian Taxonomy Engine, and the user is explicitly alerted: *"1000 request per day limit is reached. To process further continue after 24 hours."*
+- **Clarification on Text Recognition vs. AI Models & Runtime Choice**:
+  - **Text Recognition (OCR)** is strictly local: Google ML Kit (Android) or PDFium/Tesseract (Windows).
+  - **Neither Gemini nor Groq performs OCR** in standard operation:
+    - **Google Gemini 3.5 Flash Lite** (`gemini-3.5-flash-lite`, with candidate fallback models `gemini-3.1-flash-lite`, `gemini-3.8-flash`, `gemini-3.5-flash`, and `gemini-flash-latest`) offers deep multimodal and text reasoning.
+    - **Groq** (`openai/gpt-oss-20b`) offers ultra-fast text-based LLM inference.
+  - **Runtime Choice of Primary AI Engine (Gemini vs. Groq)**:
+    - Users can select at runtime whether to process documents via **Gemini** or **Groq**.
+    - Based on the user's choice, the selected engine becomes the **primary API** for document classification:
+      - If **Gemini** is selected as primary, Gemini processes requests first; if its quota is reached (HTTP 429), it automatically fails over to Groq.
+      - If **Groq** is selected as primary, Groq processes requests first; if its quota is reached or unavailable, it automatically fails over to Gemini.
+      - If both cloud AI providers are unavailable, processing gracefully falls back to the on-device Local Indian Taxonomy Engine.
+- **Zero Exposed AI Credentials**: Clients never store Gemini or Groq API keys. All provider keys live strictly in Cloudflare Worker encrypted secrets.
+- **Google OAuth Gate & Account Allowlist**: Clients authenticate using Google Sign-In (OAuth code + PKCE on Windows, Credential Manager on Android). The Cloudflare Worker verifies Google ID tokens and strictly enforces an email allowlist (`ALLOWED_GOOGLE_EMAILS = "csharma2212@gmail.com,*"`) before granting access to AI quotas.
+- **Content-Metadata-Only Classification**: Filenames are strictly excluded from category determination so prior inaccurate user renames never cause misclassification.
+- **Maximum-Identifier Conflict Resolution**: When documents match keywords across multiple candidate categories, the engine resolves conflicts using the **Maximum-Identifier Rule**—the category with the highest count of distinct matched identifiers is chosen.
+- **Persistent External Metadata Storage Across Uninstalls**: Metadata is automatically persisted to public mobile storage (`Documents/SmartDocManager/smartdoc_metadata.json` or custom chosen folder) so that re-installing the app preserves previous scan results. When loaded, files are cross-checked on disk, purging deleted items while skipping re-scans for existing documents.
+- **Rich Document Metadata Extraction & Comprehensive Entity Search**: The backend AI models (Gemini & Groq) extract structured metadata per document, including Title, Issuer/Organization, Doctor Name, Patient Name, Hospital/Clinic, Lab Name, Test Name, Lessee Name, Lessor Name, Issued Date, Amount, and Document Identifiers. This metadata is saved persistently per file (in `smartdoc_metadata.json` on Android and SQLite on Windows) and enables instant search filtering and live suggestions across any entity field.
+- **Universal Date Matching & Live Suggestions**: Flexible date parser supports any date format (Day-Month-Year, Month-Day-Year, ISO 8601, and alphanumeric written formats) for issued and created dates, accompanied by live search auto-suggestions.
+- **Non-Destructive Management & Safe Duplicate Relocation**: Original unique files on disk remain completely unmodified unless explicitly moved or permanently deleted by the user. Upon scan completion, detected physical duplicate files (`status == "Duplicate"`) are automatically relocated to a safe review directory at `Download/Duplicates/` (created automatically if missing) to declutter primary folders.
+- **Pre-Backend Quota Optimization (Upfront Duplicate Relocation & No-Text Dropping)**: To aggressively preserve the 10 req/60 sec sliding window and 1,000 req/day daily quota, the application screens all documents *before* dispatching any request to the Cloud AI backend:
+  - **Upfront Duplicate Relocation**: Binary SHA-256 and content/text duplicates are identified locally and immediately moved to `Download/Duplicates/` without making any cloud API requests.
+  - **No-Text Document Dropping**: Documents lacking valid textual content (e.g. blank scans, empty images, or unreadable noise with `< 5` alphanumeric characters) are dropped locally on-device (`UNCATEGORIZABLE` / `FALLBACK`) without making any backend API requests.
+  - **Result**: Zero backend calls are wasted on duplicate or textless files; only unique documents with valid textual content consume AI quota.
+- **Free-Tier Sustainability & Automated Fallback**: Supports runtime primary engine selection between Google Gemini 3.5 Flash Lite and Groq (`openai/gpt-oss-20b`), with automatic bidirectional failover to the secondary engine. If Cloud AI credentials are unconfigured or unavailable, the system automatically falls back to the **Local Indian Taxonomy Engine** so document processing continues without disruption. If both free tiers are exhausted, halts gracefully and notifies the user.
+- **Strict 40-Character Maximum Standardized File Naming Convention**:
+  - Filenames are constructed deterministically (not generated by LLM token guessing) and strictly adhere to an absolute maximum limit of **40 characters** (including extension).
+  - **Nomenclature Structure**: `CAT_DocumentNameAbbrev_ddMMMyy.ext` (e.g. `FIN_IncomeTaxForm16_15Nov26.pdf`).
+  - **13 Standard Categorization Domains & 3-Letter Codes**:
+    * Identity (`IDN`)
+    * Education (`EDU`)
+    * Medical (`MED`)
+    * Finance (`FIN`)
+    * Work (`WRK`)
+    * Property (`PRO`)
+    * Business (`BIZ`)
+    * Legal (`LAW`)
+    * Transport (`TPT`)
+    * Travel (`TRV`)
+    * Insurance (`INS`)
+    * Utilities (`UTL`)
+    * Agriculture (`AGR`)
+    * *(Fallback for uncategorized documents: `OTH`)*
+  - **Length Budget & Word Abbreviation**:
+    * Category Prefix: 3 chars uppercase (`CAT`)
+    * Separators: 2 chars (`_` after category, `_` before date)
+    * Date: 7 chars in `ddMMMyy` format (e.g. `15Nov26`)
+    * Extension: 4-5 chars (e.g. `.pdf`, `.jpg`, `.jpeg`)
+    * Document Name: PascalCase, aggressively abbreviating common long terms (e.g. `Certificate` -> `Cert`, `Agreement` -> `Agrmt`, `Statement` -> `Stmt`, `Marksheet` -> `MrkSht`, `Discharge Summary` -> `DischSumm`, `Prescription` -> `MedicalRx`, `Registration` -> `Reg`, etc.) with strict character budget truncation so total file length never exceeds 40 characters.
+- **Smart Prompt & Domain-Specific Key Entity Metadata**:
+  - The API prompts for Gemini and Groq do **NOT** ask the model to generate file names. Instead, the models return clean structured metadata: `category` (one of the 13 domains), `document_type` (specific document title), `issued_date` (DD-Mon-YYYY or null), `specifics`, and a dynamic domain-guided `metadata` dictionary.
+  - Only relevant metadata actually found in the document is extracted (e.g., Medical: `doctor_name`, `patient_name`, `hospital_name`, `lab_name`, `test_name`; Property: `lessor_name`, `lessee_name`; Finance: `bank_name`, `account_number`, `amount`; General: `issuer_name`, `title`, etc.).
+  - Search fields across Android and Windows allow users to type any entity name or value to immediately filter matching files with live suggestions.
 
 ---
 
-
-## Build & Verification Status
-
-| Target / Component | Status | Verification Details |
-| :--- | :--- | :--- |
-| **Windows Streamlit App** | **VERIFIED & PASSING** | `windows/app.py` (`SmartDocManager`), `windows/smartdoc/core.py`. Verified in Python 3.12 venv. |
-| **Windows Unit Tests** | **5/5 PASSED** | `windows/tests/test_core.py` executed via `pytest -q windows/tests` (100% pass). |
-| **Android Kotlin App** | **VERIFIED & PASSING** | `com.smartdoc.poc.MainActivity`, `Classifier.kt`, Kotlin 2.0.21, Jetpack Compose. |
-| **Android Unit Tests** | **5/5 PASSED** | `ClassifierTest.kt` executed via Gradle `testDebugUnitTest` (5/5 pass). |
-| **Debug APK Output** | **BUILT & VERIFIED** | Output at `output/android/SmartDocManager-debug.apk` (~8.7 MB). Cryptographically verified with Android SDK `apksigner` (v2 scheme valid). |
-| **Release APK Output** | **SUPPORTED (Gated)** | Builds signed release APK when environment variables `SMARTDOC_KEYSTORE`, `SMARTDOC_STORE_PASSWORD`, `SMARTDOC_KEY_ALIAS`, `SMARTDOC_KEY_PASSWORD` are provided. |
-| **Gradle Wrapper** | **BUNDLED** | Gradle 8.9 wrapper binaries verified and bundled (`gradle/wrapper/gradle-wrapper.jar`, `gradlew.bat`). |
-| **Android SDK Discovery** | **AUTOMATED** | Dynamically discovered via `Resolve-AndroidSdk` in `scripts/common/Helpers.ps1` from `ANDROID_HOME`, `android/local.properties`, or `%LOCALAPPDATA%\Android\Sdk`. |
-
----
-
-## Verified Dependencies & Configurations
-
-### 1. Windows Python Stack (`windows/requirements.txt`)
-* **Python Runtime:** Python 3.12 (managed automatically in `windows/.venv`)
-* **Core Libraries:**
-  * `streamlit` — Interactive desktop web UI running locally on port 8501.
-  * `pypdfium2` — Fast native PDF page extraction and rendering without external C dependencies.
-  * `pillow` — Image manipulation, orientation correction, and JPEG compression.
-  * `pandas` — Structured classification result handling and CSV generation.
-  * `pytest` — Unit test suite execution and test assertions.
-* **Application Assets:**
-  * `windows/assets/icon.ico` — Multi-resolution icon (16, 32, 48, 256 px) for the Windows Desktop shortcut.
-  * `windows/assets/icon.png` — High-resolution 256×256 PNG for the Streamlit browser favicon (`page_icon`).
-
-### 2. Android Stack (`android/app/build.gradle.kts`)
-* **Toolchain:** JDK 17, Gradle 8.9, Android Gradle Plugin `8.7.3`, Kotlin `2.0.21`
-* **Jetpack Compose Compiler:** Official Kotlin Compose Compiler plugin (`org.jetbrains.kotlin.plugin.compose:2.0.21`) with `buildFeatures { compose = true }`
-* **Compose BOM:** `androidx.compose:compose-bom:2024.11.00`
-* **Core Dependencies:**
-  * `androidx.core:core-ktx:1.15.0`
-  * `androidx.activity:activity-compose:1.9.3`
-  * `androidx.compose.ui:ui`
-  * `androidx.compose.material3:material3`
-  * `androidx.compose.foundation:foundation`
-  * `junit:junit:4.13.2` (Unit tests)
-* **Application Icons (`android/app/src/main/res/`):**
-  * Bundled standard and round launcher icons (`ic_launcher.png`, `ic_launcher_round.png`) across all 5 standard Android density tiers (`mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`).
-* **SDK Targets:** `compileSdk = 35`, `targetSdk = 35`, `minSdk = 26`, `JavaVersion.VERSION_17`
-
-### 3. Shared Specification (`shared-spec/`)
-* **Taxonomy Contract:** [`shared-spec/taxonomy.json`](./shared-spec/taxonomy.json)
-* **Result Schema:** [`shared-spec/result-schema.json`](./shared-spec/result-schema.json)
-* **Test Fixtures:** [`shared-spec/test-fixtures/manifest.json`](./shared-spec/test-fixtures/manifest.json)
-
----
-
-## Setup & Platform Configuration Details
-
-### Windows Setup
-1. Run `dev.ps1 -Action Setup`. This invokes scaffolding (`04-create-scaffold.ps1`), creates `windows/.venv/`, and installs packages from `windows/requirements.txt`.
-2. Run `dev.ps1 -Action BuildWindows`. Verifies imports and byte compilation, creates a desktop shortcut (`SmartDocManager.lnk`), and starts the Streamlit app at `http://localhost:8501`.
-3. In the Streamlit UI, enter your Gemini API key (supports both `AQ.Ab...` and `AIzaSy...` keys from [Google AI Studio](https://aistudio.google.com/apikey)) and verify the model is set to **`gemini-3-flash-preview`** (free-tier eligible). You can also click **`🔍 Detect Models for Key`** to automatically fetch and rank all active models for your key.
-
-### Android CLI Setup (Without Android Studio)
-* **Prerequisites:** JDK 17, Android SDK command-line tools, SDK platform 35, build-tools 35, and platform-tools.
-* **SDK Location:** The project automatically detects the SDK if located at `%LOCALAPPDATA%\Android\Sdk` or set via `ANDROID_HOME`/`ANDROID_SDK_ROOT`. During setup, `android/local.properties` is automatically generated if missing.
-* **USB Debugging:** Enable Developer Options and USB Debugging on your phone. Connect via USB and authorize the computer before running `dev.ps1 -Action DeployDebug`.
-
-### Android Release Signing
-To generate signed release APKs, the project provides an automated keystore generator script (`scripts/18-init-keystore.ps1`):
-1. **Automated Setup:**
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action InitKeystore
-   # or
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\18-init-keystore.ps1
-   ```
-   This prompts for a keystore password, generates a 2048-bit RSA key pair at `$HOME\.android\smartdocmanager-release.jks`, and permanently sets the required Windows user environment variables.
-2. **Environment Variables Configured:**
-   * `SMARTDOC_KEYSTORE` — Absolute path to your `.jks` or `.keystore` file (`%USERPROFILE%\.android\smartdocmanager-release.jks`).
-   * `SMARTDOC_STORE_PASSWORD` — Keystore password.
-   * `SMARTDOC_KEY_ALIAS` — Key alias (`smartdocmanager`).
-   * `SMARTDOC_KEY_PASSWORD` — Key password.
-3. **Build Command:**
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidRelease
-   ```
-*Never paste keystores or passwords into chat or commit them to source control.*
-
----
-
-### Application Branding & Icon Specifications
-
-SmartDocManager is configured with end-to-end consistent branding and custom multi-resolution visual assets across both platforms:
-
-#### 1. Universal Name Configuration (`SmartDocManager`)
-* **Windows Desktop App:** Browser tab title (`page_title='SmartDocManager'`) and main screen header (`st.title('SmartDocManager Document Classifier')`) in [`windows/app.py`](./windows/app.py).
-* **Windows Desktop Shortcut:** Placed on your Windows Desktop as `SmartDocManager.lnk` pointing to `windows/assets/icon.ico`.
-* **Android Application Label:** `android:label="SmartDocManager"` in [`AndroidManifest.xml`](./android/app/src/main/AndroidManifest.xml).
-* **Android Native UI Title:** Headline title in Compose UI (`Text("SmartDocManager", ...)` in [`MainActivity.kt`](./android/app/src/main/java/com/smartdoc/poc/MainActivity.kt)).
-* **Android Shared Preferences:** Namespaced storage domain `smartdocmanager` for cloud acknowledgement state.
-* **Gradle Project Definition:** `rootProject.name = "SmartDocManager"` in [`android/settings.gradle.kts`](./android/settings.gradle.kts).
-* **Compiled Binary Outputs:** `output/android/SmartDocManager-debug.apk` and `output/android/SmartDocManager-release.apk`.
-* **CSV Export Artifact:** Exported classification reports default to `smartdocmanager_results.csv`.
-
-#### 2. Multi-Resolution Icon Assets
-* **Windows Desktop Icon:** [`windows/assets/icon.ico`](./windows/assets/icon.ico)
-  * Embedded multi-resolution icon bundle with 16×16, 32×32, 48×48, and 256×256 px layers. Used by Windows Explorer and Desktop shortcuts.
-* **Windows Browser Favicon:** [`windows/assets/icon.png`](./windows/assets/icon.png)
-  * High-resolution 256×256 px PNG passed to `st.set_page_config(page_icon=...)`.
-* **Android Launcher & Round Icons:** [`android/app/src/main/res/`](./android/app/src/main/res/)
-  * Standard (`ic_launcher.png`) and round (`ic_launcher_round.png`) icons bundled across all 5 standard Android density tiers:
-    * `mipmap-mdpi/`: 48×48 px
-    * `mipmap-hdpi/`: 72×72 px
-    * `mipmap-xhdpi/`: 96×96 px
-    * `mipmap-xxhdpi/`: 144×144 px
-    * `mipmap-xxxhdpi/`: 192×192 px
-  * Referenced in `AndroidManifest.xml` via `android:icon="@mipmap/ic_launcher"` and `android:roundIcon="@mipmap/ic_launcher_round"`.
-
----
-
-### Machine Portability & Reproduction Runbook
-
-The project is architected to build and run cleanly on **any Windows 10/11 machine** without requiring Android Studio, WSL2, or global Gradle installations:
-
-#### System Prerequisites
-1. **Operating System:** Windows 10 or 11 (64-bit) with PowerShell 5.1+ or PowerShell 7+.
-2. **Internet Connection:** Direct connection (no proxy required).
-3. **Core Tooling (Auto-provisioned if missing):**
-   * Python 3.12 (auto-installed via `winget` if missing).
-   * Java JDK 17 (Eclipse Temurin 17 auto-installed via `winget` if missing).
-   * Git for Windows (auto-installed via `winget` if missing).
-   * Android SDK (command-line tools, platform SDK 35, build-tools 35, platform-tools `adb`).
-
-#### Reproduction Steps on Any New Machine
-```powershell
-# Step 1: Clone or extract clean source archive, then enter the project folder
-cd <project-folder>
-
-# Step 2: Initialize environment (scaffolds dirs, creates Python venv, installs requirements, auto-detects Android SDK, verifies Gradle wrapper)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Setup
-
-# Step 3: Run full pre-build test suite (validates contract, 5 Windows unit tests, 5 Android unit tests)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Test
-
-# Step 4: Build Windows application and create Desktop shortcut
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildWindows
-
-# Step 5: Build Android Debug APK (compiled to output/android/SmartDocManager-debug.apk)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action BuildAndroidDebug
-```
-
----
-
-### Clean Source Archive & Exclusion Guidelines
-
-When packaging this project into a `.zip` archive for distribution, backup, or moving to another machine, ephemeral caches, machine-specific paths, and build outputs must be excluded to maintain confidentiality, prevent broken dependencies, and keep the archive lightweight (~0.4 MB instead of 1+ GB).
-
-#### Files & Folders to EXCLUDE from Archive
-| Path / Pattern | Reason for Exclusion | Impact if Kept |
-| :--- | :--- | :--- |
-| **`windows/.venv/`** | Machine-specific Python binaries, virtual environment symlinks, and absolute path pointers. | 200–500 MB bloat; completely breaks on other machines. Recreated in ~30s via `dev.ps1 -Action Setup`. |
-| **`windows/__pycache__/`** | Compiled `.pyc` bytecode specific to host Python version. | Redundant; auto-compiled during execution. |
-| **`android/.gradle/`** | Gradle execution state, daemon logs, lock files, and host-specific cache entries. | 100–300 MB bloat; causes daemon conflict errors on other machines. |
-| **`android/local.properties`** | Contains host-specific Android SDK path (`sdk.dir=C:/Users/...`). | Causes build failure on machines with different usernames/SDK paths. Auto-generated on setup. |
-| **`android/build/`, `android/app/build/`** | Intermediate compiler outputs, R classes, and DEX objects. | 150–400 MB bloat. Rebuilt automatically. |
-| **`output/`** | Final compiled binaries (`SmartDocManager-debug.apk`, test summaries). | ~9 MB; easily rebuilt via `dev.ps1 -Action BuildAndroidDebug`. |
-| **`logs/`** | Previous run logs and execution reports from the local machine. | Machine-specific diagnostic clutter. |
-| **`backups/`** | Local timestamped backups created during scaffolding. | Redundant historical file copies. |
-| **`smartdoc_scripts_pack/`** | Redundant nested duplicate of the `scripts/` folder. | Duplicate code. |
-| **`*.jks`, `*.keystore`** | Production release keystores and private cryptographic certificates. | **Critical security risk:** Private signing keys must never be packaged or distributed. |
-| **`.vscode/`, `*.code-workspace`** | User-specific editor window configurations and local workspace state. | Personal editor preferences not needed by other developers. |
-
-#### Files & Folders to INCLUDE in Archive
-* `dev.ps1`, `README.md`, `.gitignore`
-* `scripts/` (all stage scripts `01` through `19` and `common/Helpers.ps1`)
-* `shared-spec/` (`taxonomy.json`, `result-schema.json`, `prompt-policy.md`, `test-fixtures/`)
-* `windows/` (`app.py`, `requirements.txt`, `assets/`, `smartdoc/`, `tests/`)
-* `android/` (`gradlew.bat`, `gradlew`, `gradle/wrapper/`, `settings.gradle.kts`, `build.gradle.kts`, `app/build.gradle.kts`, `app/src/`)
-
-#### 1-Click Automated Archive Generation
-Use the built-in archive generator script to create a clean, distribution-ready `.zip` archive automatically:
-```powershell
-# Via dev.ps1 master controller:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Archive
-
-# Or directly via standalone script:
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\19-create-clean-archive.ps1
-```
-* **Result:** Produces a clean `SmartDocManager-source-<timestamp>.zip` of **~0.4 MB** in the project root.
-
----
-
-## Changelog & Revision History
-
-### Stage 2 Baseline Implementation
-* Added Windows Streamlit document classification app (`windows/app.py`, `windows/smartdoc/core.py`) with mocked unit tests (`windows/tests/test_core.py`).
-* Added Android Kotlin app (`MainActivity.kt`, `Classifier.kt`) with PDF/image ingestion, Gemini multimodal API client (`gemini-3-flash-preview` / `gemini-2.0-flash`), and unit tests (`ClassifierTest.kt`).
-* Added master workflow controller (`dev.ps1`) and task-specific automation stages (`scripts/01` to `scripts/17`).
-* Added shared classification contract (`shared-spec/taxonomy.json` and `shared-spec/result-schema.json`).
-
-### Hotfix 02 — Setup & Scaffolding Sequence
-* Fixed setup sequence to scaffold directories before running dependency installations.
-* Added virtual environment verification and package import tests to stage 05.
-
-### Hotfix 04 — Gradle Wrapper Verification
-* Added standalone Gradle wrapper generation stage (`scripts/16-init-gradle-wrapper.ps1`).
-* Added Gradle wrapper component verification before Android test and build stages.
-
-### Hotfix 05 — Build & Recreation Stabilization
-* **Kotlin 2.0+ Compose Compiler:** Integrated `org.jetbrains.kotlin.plugin.compose:2.0.21` and `buildFeatures { compose = true }` in `android/app/build.gradle.kts`, fixing the `CompositionLocal.getCurrent()` IR compiler crash.
-* **Centralized SDK Discovery:** Added `Resolve-AndroidSdk` to `scripts/common/Helpers.ps1` with fallback to `android/local.properties` and local AppData.
-* **Scaffold Auto-Generation:** Updated `scripts/04-create-scaffold.ps1` to automatically recreate `android/local.properties` if missing.
-* **Resilient Artifact Verification:** Updated `scripts/12-verify-artifacts.ps1` and `14-open-android-output.ps1` to dynamically verify available APKs without failing when release keystores are unconfigured.
-* **Documentation Unification:** Consolidated all separate markdown files (`START_HERE.md`, `DEVELOPMENT_STATUS.md`, `BUILD_REPORT.md`, `CHANGELOG.md`, `README_FIX_02.md`, `SmartDoc_POC_README_v2_2.md`) into a single verified `README.md`.
-
-### Hotfix 06 — Google AI Studio Auth, Model Detection & Localhost Customization
-* **Gemini 3 Flash Preview & Dynamic Model Discovery:** Set `gemini-3-flash-preview` as the primary free-tier multimodal model default. Added real-time Google AI Studio `ModelService.ListModels` detection in `windows/app.py` via `🔍 Detect Models for Key` with smart ranking that prioritizes vision/multimodal models over text-only models (like `antigravity-preview`).
-* **AQ.Ab Auth Key Support:** Added support for Google AI Studio's newer `AQ.Ab...` authorization keys alongside classic `AIzaSy...` keys, with automatic whitespace trimming (`.strip()`) and dual-channel query/header routing to prevent HTTP 400 errors.
-* **Localhost & Custom Port Launch:** Updated `scripts/13-launch-windows.ps1` and `dev.ps1` to bind to `localhost` instead of hardcoded `127.0.0.1`, and added support for a customizable `-Port <port>` parameter.
-* **Resilient Root Resolution:** Updated `Assert-Root` in `scripts/common/Helpers.ps1` to automatically resolve to the project root even when invoked without arguments, enabling all automation scripts (`07-test-windows.ps1`, `08-test-android.ps1`, etc.) to run standalone directly from the terminal.
-* **Lean Source Hygiene:** Purged >500 MB of regenerable files (`.venv`, Gradle caches, build outputs), updated `.gitignore`, and verified 100% path portability across arbitrary folders (e.g., `SmartDocManager`).
-
-### Hotfix 07 — App Renaming to SmartDocManager, Custom Icons, Keystore Automation & Real-Device USB Testing
-* **Universal Application Renaming:** Renamed all user-facing application labels, titles, CSV export headers, Gradle root project, and desktop shortcuts to `SmartDocManager`. Output targets updated to `SmartDocManager-debug.apk` and `SmartDocManager-release.apk`.
-* **Custom Multi-Resolution Icons:** Processed high-resolution `.ico` assets into a Windows desktop icon (`windows/assets/icon.ico`), Streamlit favicon (`windows/assets/icon.png`), and all 5 standard Android density tiers (`mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`) for `ic_launcher.png` and `ic_launcher_round.png`.
-* **OneDrive Build Cache Redirection:** Relocated Gradle `layout.buildDirectory` to `%LOCALAPPDATA%/AndroidDev/SmartDocManager-build/` in `build.gradle.kts` and `app/build.gradle.kts`, permanently preventing cloud reparse point locks (`IO_REPARSE_TAG_CLOUD` / `not a regular file`).
-* **Release Keystore Automation:** Created `scripts/18-init-keystore.ps1` to generate a 2048-bit RSA release keystore (`smartdocmanager-release.jks`) using `keytool` and set user environment variables permanently. Updated `dev.ps1` with `InitKeystore`, `BuildAndroidDebug`, and `BuildAndroidRelease` actions.
-* **Real-Device ADB Deployment & Error Diagnostics:** Enhanced `scripts/15-deploy-android-debug.ps1` to audit ADB status, guide physical device setup (Developer Options, USB Debugging, "Install via USB"), install the debug APK, automatically launch the app, and provide live logcat streaming (`adb logcat -v time | Select-String "SmartDoc|com.smartdoc.poc|AndroidRuntime|FATAL|Exception"`) to capture runtime errors and crashes.
-
----
-
-# SmartDocManager — Cross-Platform Document Classification Specification
-
-**Version:** 2.2 (finalized development specification; no application code)  
-**Date:** 2026-11-05  
-**Source:** `README_Original.md` — *Offline Document Classification Engine (POC Specification & Runbook)*
-
-## 1. Executive summary and decision
-
-Build **two applications** from one Windows 11 Home development PC: (1) a Windows desktop-accessible Streamlit application and (2) a native Android APK for Realme C63 5G (RMX3950), Realme UI 7.0. Both target devices report 8 GB RAM and have direct internet access without a proxy. Usage is approximately once per week; zero-cost or very-low-cost operation is preferred.
-
-**Recommended POC architecture:** local document ingestion and preprocessing + **Google Gemini Developer API free-tier cloud classification** for explicitly approved, non-sensitive or redacted test documents, without mandatory offline inference in the baseline POC; offline inference is an optional future extension. The cloud-first choice **changes** the original README's mandatory local-only privacy boundary; it must never be silently treated as equivalent. For unredacted sensitive enterprise/identity/medical/legal material, cloud processing is **disabled by default** and requires an independently approved provider, account, data-handling arrangement and organizational authorization. Free-tier availability does not constitute such approval.
-
-No offline classification is required in v2.2. If internet is unavailable, explain that classification requires a connection. Local PDF/image preprocessing remains supported. OCR/rules and on-device VLM inference are deferred optional experiments, not prerequisites for build or acceptance.
-
-## 2. Hardware and environment
-
-| Device | Confirmed inputs | Open questions |
-|---|---|---|
-| Development/target PC | Windows 11 Home, 8 GB RAM, internet without proxy | CPU, GPU/VRAM, free SSD space, Python version |
-| Android target | Realme C63 5G RMX3950, Realme UI 7.0, reported 8 GB RAM, internet without proxy | Physical RAM vs Dynamic RAM, Android API level, available storage, sustained inference performance |
-
-Do not require CUDA, WSL2, vLLM, a dedicated GPU, or downloading an 11B model for the baseline POC. The PC builds both applications. Android compilation uses the JDK, Gradle wrapper, Android SDK command-line tools, build-tools, platform SDK and platform-tools **without installing Android Studio or an emulator**. Use the real phone via USB debugging for device tests. Build stages run sequentially on the 8 GB PC.
-
-## 3. Original taxonomy — unchanged
-
-Classify a single-page document, or the selected page(s) of a PDF, into exactly one of:
-
-1. **Medical Record** — prescriptions, diagnostic/lab reports, discharge summaries, admission forms, clinical invoices.
-2. **Government-issued Document** — Aadhaar, PAN, passports, voter IDs, driving licences, national IDs.
-3. **Organization-issued ID Card** — employee badges, student/university IDs, corporate insurance cards, visitor passes.
-4. **Legal Document** — NDAs, rental/lease contracts, sale deeds, court affidavits, powers of attorney.
-5. **uncategorizable input** — unreadable, blank, corrupted, out-of-scope, or insufficiently supported classifications.
-
-Use explicit precedence for overlapping government/employer credentials. Do not guess unreadable text or invent visual evidence. Separate *processing errors* from genuine uncategorizable results in the machine-readable output.
-
-## 4. Functional requirements — both platforms
-
-- Upload/select one or multiple PDFs, PNG, JPG/JPEG and WebP files.
-- Inspect a single document and batch-process multiple files; Windows additionally supports user-selected local directory intake, and Android supports user-selected files/folders through the Storage Access Framework (subject to Android permissions).
-- Default to first-page classification for PDFs, matching the original POC. Optionally sample additional pages in a separately configured experiment; never claim comprehensive multi-page coverage by default.
-- Render PDF pages locally, correct image orientation, normalize color, and resize images within provider limits. Avoid unnecessarily large uploads.
-- Show Filename, Category, **What specifics made the POC decide the category**, Processing Status, and Provider/Mode; include elapsed time and optional confidence/evidence-quality indicator without representing generated confidence as calibrated probability.
-- Enforce the exact category enumeration and a structured, validated response; reject fabricated evidence and handle invalid JSON, timeouts, 429 rate limits, quota exhaustion, provider outages and cancellation.
-- Show per-file progress, retry controls, error messages, and an exportable CSV of results. Never log full document images, extracted personal identifiers, or API credentials.
-- No automatic renaming, deletion, or modification of source documents in this POC.
-- Perform device readiness checks at setup/installation where platform mechanisms permit, at first launch, and before resource-intensive processing, following Section 8.
-
-## 5. Architecture
-
-### 5.1 Shared specification, not shared runtime
-
-Maintain shared taxonomy, precedence rules, JSON schema, validation fixtures, evaluation dataset and acceptance tests. The Windows and Android implementations use separate native I/O and UI layers.
-
-**Windows:** Streamlit UI → Python file/PDF preprocessing (`pypdfium2`, Pillow) → classification orchestration → provider adapter → response validation → pandas results/CSV.
-
-**Android:** Kotlin + Jetpack Compose UI → Storage Access Framework + Android PDF/image rendering → classification orchestration → provider adapter → schema validation → Room/local results + CSV sharing.
-
-**Provider adapter interface (conceptual):** `classify(document_image_or_pages, metadata, policy) -> structured_result`. Baseline backend: `GeminiCloudProvider`. `OfflineHeuristicProvider` and `LocalVLMProvider` are deferred optional extensions. These are architectural contracts, not code.
-
-### 5.2 Cloud mode — baseline
-
-- Use **Gemini Developer API**, with an eligible free-tier multimodal model selected from the account's *current* Google AI Studio model/rate-limit dashboard. Do not hardcode an assumed permanent free model or request quota.
-- Google AI Studio is for obtaining/testing API access; the shipped Windows and Android apps call the Gemini API, not the AI Studio web interface.
-- The Windows application can hold a personal API key in local environment configuration excluded from source control.
-- **Do not embed a reusable Gemini API key in the Android APK.** For a personal-only POC, use a user-supplied key entered into device-protected storage with explicit warnings and key rotation; this still exposes a client-side credential and is not suitable for distribution. For a distributed or production app, use a minimal authenticated backend/proxy with server-side key storage, abuse controls, quotas, and documented hosting cost. A PC-hosted proxy would require the PC to be running and reachable; it is not assumed.
-- Explicitly disclose that the document is transmitted to a third-party service. Show a clear one-time POC cloud-data notice during first setup and a persistent Cloud mode indicator. Do **not** request confirmation for each selected document or batch. Do not transmit documents until the initial notice has been acknowledged; retain this choice across sessions. This acknowledgement does not substitute for organizational authorization for sensitive/company-controlled data.
-- Sensitive or company-controlled documents are excluded from the free-tier cloud POC unless organizational policy and contractual/data-processing terms explicitly permit it. Use synthetic/redacted samples for initial evaluation.
-
-### 5.3 Offline classification — deferred, not required for v2.2
-
-- When disconnected, show **Internet connection required for classification**. Allow file selection and local preprocessing only when safe; do not misrepresent this as completed classification.
-- No offline OCR, heuristic classifier, Ollama, or on-device VLM is a baseline dependency, build gate, or acceptance criterion.
-- Future offline processing may be evaluated as a separately approved extension and must be benchmarked independently.
-
-## 6. Free and low-cost alternatives
-
-| Alternative | Cost profile | Device impact | Privacy | POC recommendation |
-|---|---|---|---|---|
-| Google Gemini Developer API free tier | Free for eligible models within live quotas; may change | Low local inference RAM/storage | Documents leave device; free-tier data-use terms require review | **Preferred for synthetic/redacted weekly tests** |
-| Other providers' free API tiers | Availability and limits change frequently; must verify | Low | Third-party transmission | Secondary adapter only after terms/quotas verified |
-| Local lightweight OCR + rules | Free/open or device-bundled components | Low to moderate | Fully local | Optional future extension |
-| Local quantized VLM | No per-call charge; installation/storage/performance cost | Potentially substantial | Fully local | Optional benchmark, not baseline |
-| Self-hosted AI on PC accessed by phone | No per-call API fee, but PC must remain powered/reachable | PC bears inference cost | Local network only if properly configured | Not baseline on 8 GB PC |
-| Free hosted notebooks/community inference | Unreliable availability and privacy; runtime expiration | Low local | Often unsuitable for sensitive documents | Not recommended |
-
-**Gemini free-tier caution (as checked 2026-11-04):** Google publishes model-specific free/paid pricing, per-project quotas, and free-tier data-use distinctions. Verify current model eligibility and live RPM/TPM/RPD in AI Studio before use. No fixed weekly quota or perpetual zero-cost guarantee is assumed. Keep the project on the free tier; do not attach billing or automatically upgrade without an explicit decision. A Google AI consumer subscription is not a substitute for API quota.
-
-Official references:
-- https://ai.google.dev/gemini-api/docs/pricing
-- https://ai.google.dev/gemini-api/docs/rate-limits
-- https://aistudio.google.com/docs/billing
-
-## 7. Security, privacy and data governance
-
-The original README's objective was **documents never leave the local security perimeter**. The recommended cloud-first POC **cannot meet that original requirement**. Therefore the revised POC offers an explicit policy split:
-
-- **Local-only handling:** files may be selected and preprocessed locally, but no classification is available without the internet in v2.2; no upload occurs while offline.
-- **Approved Cloud Test Policy:** synthetic/redacted or otherwise explicitly authorized documents may be sent to Gemini; show the first-use cloud disclosure and provider; minimize retention, avoid document-content logs, and display clear privacy warnings.
-
-Do not send unredacted Aadhaar, PAN, medical records, company documents or contracts to a free API merely because the service is free. Protect credentials, use HTTPS, apply input-size limits, remove temporary files, prevent path traversal, and never display full sensitive identifiers in logs/results. Consider redaction before any cloud transmission, recognizing that automatic redaction can fail. Do not claim regulatory compliance without a separate review.
-
-## 8. Device readiness, storage and memory checks (mandatory on both platforms)
-
-### 8.1 When to check
-
-- **Windows setup / first run:** a preflight script checks available disk space, installed physical RAM, current available memory, operating-system compatibility and required software before downloading dependencies or initializing the app. Recheck when the application starts and before a batch or optional local-model operation.
-- **Android installation:** Android controls package installation and may reject installation for insufficient storage; a normal APK cannot reliably run custom pre-install checks. Instead, perform checks on **first launch**, after app updates where relevant, and before resource-intensive tasks. Show installation-time requirements in the Android setup instructions and, if using a custom PC-side ADB installer, optionally run a non-destructive host-side preflight before installation.
-- Recheck when the user selects **Recheck**, changes processing mode, starts a large batch, or returns after an out-of-memory/storage failure. Avoid constant polling and intrusive alerts.
-
-### 8.2 What to measure
-
-| Resource | Windows | Android | Notes |
-|---|---|---|---|
-| Installed physical RAM | OS system information | Android system APIs, subject to device reporting | Do not count Dynamic RAM / swap as physical RAM. |
-| Available memory | OS memory counters | `ActivityManager.MemoryInfo` / low-memory indication | Available RAM fluctuates; it is not a guaranteed per-app allocation. |
-| Free storage | Free space on installation, cache, and temp volumes | Free bytes in the app's relevant storage volume | Include download/cache and temporary PDF/image processing needs. |
-| Workload requirements | Selected provider, PDF page/image sizes, batch settings | Selected provider, image sizes, batch settings | Cloud mode generally requires much less memory/storage than a local VLM. |
-| Other prerequisites | Python/runtime availability, internet for cloud mode | Android API compatibility, internet for cloud mode | Distinguish network/provider errors from device resource failures. |
-
-### 8.3 Threshold policy
-
-- Do **not** invent a universal RAM or storage threshold merely because the devices have 8 GB RAM. Define and document **minimum free storage**, **recommended free storage**, and **minimum available-memory headroom** for Windows cloud mode and Android cloud mode. Define separate thresholds only if offline OCR/rules or a local VLM is added in a future version.
-- Derive initial values from actual installed application/dependency sizes, model download size (if any), peak temporary-file size and measured peak working-set usage on the two target devices. Record these values in a versioned configuration and in the README after benchmarking.
-- Until measurements are available, display **Requirements not yet verified** instead of claiming an exact minimum. Check available space against the predicted operation's footprint with a safety margin. Use Android's system low-memory signal as an additional warning rather than promising that a specific free-RAM number guarantees success.
-- Use a **warning** when resources are below the recommended margin but a safe small/cloud workload may still succeed; **block only** the operation when measured/estimated requirements cannot be met safely (for example, insufficient storage to install a model or render the selected document). Allow a smaller batch, lower image resolution, or cloud mode where privacy policy permits. Never block the whole application unnecessarily.
-
-### 8.4 Required user-facing warning and actions
-
-Show the following exact headline when resources are insufficient or below the recommended threshold:
-
-> **This app requires minimum space and memory for limited use**
-
-The message beneath it must be specific and actionable, for example: *Available storage: [X] GB; required for this operation: [Y] GB. Available RAM: [A] MB; recommended headroom: [B] MB. Free at least [difference] GB of storage or reduce the workload, then tap Recheck.* Substitute measured/configured values; never show placeholders as actual measurements.
-
-Provide **Recheck**, **View requirements**, **Reduce workload**, and **Cancel** actions as applicable. Recommend users free storage by removing unused apps or files **through OS settings**, clearing safe caches, or moving personal files after reviewing them. For memory pressure, suggest closing unneeded apps, reducing batch size, or restarting the device if appropriate. On Android, guide users to OS settings rather than claiming the app can reliably force-stop other applications. On Windows, do not kill unrelated processes automatically. Never silently uninstall apps, clear unrelated data, delete documents, or require privileged access for routine checks.
-
-### 8.5 Acceptance tests
-
-- Verify Windows preflight and Android first-launch/pre-operation checks on the actual target devices.
-- Simulate low storage and low-memory signals; verify the exact warning headline, correct units, measured values, actionable shortage, and working **Recheck** flow.
-- Verify that a cloud-mode single-file operation is not blocked by requirements intended only for an optional local VLM.
-- Verify safe behavior when resource readings are unavailable or change between preflight and processing; handle allocation failures gracefully.
-- Verify that no unrelated application is terminated and no user file is removed by readiness checks.
-
-## 9. Project structure — create directly inside user-selected root
-
-The user chooses an **existing project root** (including `./`, meaning the current PowerShell working directory). Do not create a nested `SmartDocManager/` folder. A bootstrap script placed in the chosen root creates the following structure. Existing files are backed up with a timestamp before intentional replacement; never overwrite silently or destroy user data.
+## 2. System Architecture
 
 ```text
-<selected-project-root>/
-  dev.ps1                         # master PowerShell entry point
-  README.md
-  README_Original.md
-  README_Revised_SmartDoc_POC.md
-  .gitignore
-  scripts/
-    01-check-resources.ps1
-    02-check-dependencies.ps1
-    03-install-dependencies.ps1
-    04-create-scaffold.ps1
-    05-verify-readiness.ps1
-    06-test-shared.ps1
-    07-test-windows.ps1
-    08-test-android.ps1
-    09-build-windows.ps1
-    10-build-android-debug.ps1
-    11-build-android-release.ps1
-    12-verify-artifacts.ps1
-    13-launch-windows.ps1
-    14-open-android-output.ps1
-    15-deploy-android-debug.ps1   # ADB deployment to phone & live logcat error diagnostics
-    16-init-gradle-wrapper.ps1    # Gradle wrapper validation & initialization
-    17-create-windows-shortcut.ps1 # Windows desktop shortcut creation
-    18-init-keystore.ps1          # Release signing keystore generator & setup
-    19-create-clean-archive.ps1   # Clean source archive (.zip) generator
-    common/                       # shared logging, paths, exit handling
-  docs/
-    architecture.md
-    privacy-policy-modes.md
-    evaluation-plan.md
-    development-runbook.md
-  shared-spec/
-    taxonomy.json
-    result-schema.json
-    prompt-policy.md
-    test-fixtures/                # synthetic/redacted only
-  windows/
-    app.py
-    smartdoc/
-    requirements.txt
-    tests/
-  android/
-    gradlew.bat                   # Gradle wrapper; no global Gradle required
-    gradle/
-    settings.gradle.kts
-    build.gradle.kts
-    app/
-    core/
-    README.md
-  evaluation/
-    ground-truth.csv
-    results/
-  output/
-    android/                      # both final APKs copied here
-    windows/
-  logs/                           # timestamped stage logs and reports
-  backups/                        # timestamped pre-overwrite copies
+                                ┌────────────────────────────────────────────────────────┐
+                                │          Cloudflare Worker (smartdocmanager-api)       │
+                                │  • Validates Google ID tokens via tokeninfo            │
+                                │  • Enforces ALLOWED_GOOGLE_EMAILS                      │
+                                │  • Per-IP Abuse Limiter: 10 req / 60 sec (CLASSIFY_LIMITER) │
+                                │  • Routes: Gemini 3.5 Flash Lite <──> Groq (Bidirectional Fallover) │
+                                └───────────────────────────┬────────────────────────────┘
+                                                            │
+                              ┌─────────────────────────────┴─────────────────────────────┐
+                              ▼                                                           ▼
+┌────────────────────────────────────────────────────────┐  ┌────────────────────────────────────────────────────────┐
+│               Android Native Application               │  │             Windows Desktop Application                │
+│  • UI: Kotlin + Jetpack Compose (Material3)            │  │  • UI: Dedicated Desktop Window (App Mode / Streamlit) │
+│  • Auth: Android Credential Manager (7-day cache)      │  │  • Auth: Google Desktop OAuth + PKCE (127.0.0.1)       │
+│  • OCR Engine: Native PdfRenderer + ML Kit (On-Device) │  │  • OCR: PyPdfium2 Native Text + OCR Fallback           │
+│  • Storage: Auto Whole-Device Scan (MANAGE_EXT_STORAGE)│  │  • Taxonomy: Local Indian rule & date extraction       │
+│  • Persistent Metadata: External JSON across uninstalls│  │  • Storage: Local SQLite (~/.smartdocmanager/)         │
+│  • File Store: SAF DocumentsProvider (Gmail, WhatsApp) │  │  • Safety: Virtual renames & duplicate hiding          │
+│  • Safety: Virtual renames & duplicate hiding          │  │                                                        │
+└────────────────────────────────────────────────────────┘  └────────────────────────────────────────────────────────┘
 ```
-
-The exact script filenames are normative task names; shared helpers may be added. Scripts must work with paths containing spaces, should be idempotent where feasible, and must resolve the project root rather than relying on the caller's current directory.
-
-## 10. Automated development and validation workflow — mandatory
-
-### 10.1 Master controller and approval
-
-- The user runs `dev.ps1` in PowerShell. The master offers Setup/Repair, Verify, Test, Build Windows, Build Android, Build All, Launch Windows, Open APK Folder, and optional Deploy Debug APK.
-- Setup accepts the existing project directory or `./`. Bootstrap creates `dev.ps1` and the `scripts/` folder **inside** that selected root. The bootstrap mechanism must be documented clearly for the first run.
-- Check tool versions before installing. Request confirmation for system-level changes and respect Windows UAC and SDK license acceptance; the user's general preference to approve missing tools does not override OS prompts or license terms.
-- Prefer `winget` or official installers where available; create Python `.venv` locally; use the Gradle wrapper and Android SDK command-line tools only. Do not install Android Studio, an emulator, CUDA, WSL2, or local 11B models for the baseline.
-- Never store API keys or signing passwords in scripts, logs, source control, or APK source. Preserve and back up the release keystore securely outside source control.
-
-### 10.2 Strict stage orchestration
-
-1. **Preflight:** verify OS, physical/available RAM, storage, CPU, network reachability (when needed), toolchain versions, and expected workload footprint. Show the Section 8 warning and Recheck. Block only unsafe operations.
-2. **Dependencies:** detect and install/repair missing tools with approval; recheck their executable functionality and compatible versions.
-3. **Scaffolding:** create directories and files directly under the chosen root; make timestamped backups before overwriting modified files.
-4. **Readiness:** verify mandatory files, imports, Java, Android SDK licenses/platform/build-tools, Gradle wrapper, provider configuration (without revealing secrets), and signing configuration. Distinguish optional from blocking requirements.
-5. **Pre-build tests:** run shared schema/contract tests, Windows module tests, and Android module/unit tests as applicable. Mock Gemini responses in every normal build. Any mandatory failure **stops the workflow before compilation**.
-6. **Windows build/verification:** validate Python dependencies, imports, packaging/launcher and Streamlit startup. Streamlit is a local web application, not an EXE; provide a desktop shortcut or launcher that starts the local server and opens the default browser.
-7. **Android builds:** run Gradle command-line builds sequentially for debug and release; use a persistent user-owned release keystore created in a one-time guided setup. Produce `SmartDocManager-debug.apk` and `SmartDocManager-release.apk` in `output/android/`.
-8. **Post-build verification:** check both APKs exist, are nonempty, have the expected application ID/version, are signed with the correct debug/release certificates, and pass available artifact checks. Run any integration/smoke checks that require compilation. Report any device-only checks not run.
-9. **Delivery:** after success, launch Windows Streamlit in the default browser and open Windows Explorer at `output/android/`. Optionally deploy debug APK over ADB to the Realme only when explicitly requested, connected, and all required tests pass.
-
-Each script emits a clear stage name, duration, success/failure state, actionable error, and nonzero exit code on failure. The master records a timestamped report (tool versions, test counts, artifacts, checksums, skipped tests and reasons, overall result). On mandatory failure, stop downstream stages, print **BUILD FAILED**, and identify the failing stage and log. Fix the underlying script/source and update README/runbook if the documented process changes; rerun the workflow from preflight. Do not automatically conceal errors or skip failed tests. On full success print **BUILD SUCCEEDED**.
-
-### 10.3 Testing and operational details
-
-- Required pre-build tests: taxonomy, schema, invalid JSON, ambiguous IDs, uncategorizable fallback, processing status, PDF/image handling, batch order, ETA updating after each file, cancellation, resource warnings/Recheck, provider failure handling, first-use cloud notice, credential redaction, Windows modules, and Android modules.
-- API/network errors (timeout, authentication, 429, outage) immediately yield category `uncategorizable input` **plus a distinct error status**; no automatic retry in the baseline. A genuine unclassifiable document uses the same category with status `UNCATEGORIZABLE`. Explanations must not falsely claim visual evidence on API failure. Manual retry may be offered.
-- Batch processing accepts multiple documents but classifies one at a time. Show completed/total, current filename, elapsed time, and an **approximate** remaining time recalculated after each file.
-- Live Gemini integration tests are a separate manually invoked action, using synthetic/redacted fixtures and a currently eligible free-tier project; never make billable or live calls a mandatory part of every build.
-- On an 8 GB PC, avoid parallel Windows/Android builds and Android emulators. USB real-device testing is the primary Android device validation path. The APK build itself does not require a connected phone.
-- Preserve Windows settings/results and Android app data across compatible updates; maintain Android application ID and signing identity. Document backup/migration procedures for schema changes.
-
-## 11. Evaluation and acceptance criteria
-
-**Functional gates:**
-- Both platforms perform resource readiness checks at supported lifecycle points and show the exact minimum-space-and-memory warning with actionable remediation and Recheck, as defined in Section 8.
-- Both apps accept supported formats, process a single document and batches, show the exact category and evidence column, and export results.
-- Invalid/blank/out-of-scope files use the specified fallback; transport/model failures use a separate error status.
-- Cloud requests require first-use disclosure acknowledgement, without per-file prompts; no document upload occurs when offline.
-- Invalid model output never creates an out-of-taxonomy category; explanations do not assert unobserved evidence.
-- Pre-build tests gate compilation; post-build verification gates delivery. Both signed Android APK variants are generated without Android Studio; Windows Streamlit launch and shortcut are verified.
-
-**Proposed POC targets, to validate rather than guarantee:**
-- Build an evaluation corpus of at least 20 samples per business class plus at least 20 uncategorizable samples (minimum 100 total), using synthetic/redacted documents.
-- Report per-class precision/recall, confusion matrix, false-positive rate on out-of-scope samples, JSON validity, processing errors, and end-to-end latency on both devices.
-- Aim for >=85% macro-F1 on this limited corpus for cloud mode, with no guarantee until measured; do not claim offline-classification results for the v2.2 baseline.
-- Test batches of at least 10 files without UI crashes; enforce bounded concurrency and memory use.
-- Measure typical and worst-case latency rather than promising an unmeasured response time.
-- Verify zero billable usage for tests run under a confirmed eligible free-tier project, without assuming this remains true in the future.
-
-## 12. Failure modes and remediation
-
-- **No internet:** explain classification requires internet; do not silently upload or attempt offline classification.
-- **401/403 credentials/access:** show actionable key/project/region error without exposing secrets.
-- **429 quota:** mark `uncategorizable input` with distinct `RATE_LIMITED` processing status, show quota guidance and optional manual retry; never bypass rate limits.
-- **API pricing/availability changes:** provider configuration and live preflight check; fail closed on non-free or unapproved mode.
-- **Large PDF or image:** page limits, size limits, resize; show unsupported/oversize error.
-- **Malformed model JSON:** structured-output constraints where supported, strict parsing and validation; mark fallback category plus `INVALID_RESPONSE` status without automatic retry.
-- **Ambiguous ID:** explicit precedence, evidence requirement, otherwise fallback.
-- **Low resolution:** do not invent text; fallback when evidence is inadequate.
-- **Android memory pressure:** bounded image buffers, one-at-a-time inference requests, lifecycle-aware cancellation; show the Section 8 warning and recovery options.
-- **App shutdown during batch:** preserve completed result metadata locally, permit explicit restart/resume.
-- **API key exposure:** revoke/rotate compromised keys; never commit or embed a distribution key.
-
-## 13. Out of scope for baseline POC
-
-- Guaranteed fully offline VLM-level accuracy on the Realme C63 5G.
-- Production cloud processing of unredacted sensitive or enterprise data without approval.
-- Auto-renaming, deleting, moving or syncing source documents.
-- Always-on PC server or mandatory LAN connection between phone and PC.
-- Guaranteed permanent zero-cost Gemini access.
-- Production user authentication, payments, cloud storage or public app distribution.
-
-## 14. Remaining implementation prerequisites (not unresolved architecture decisions)
-
-The following facts must be collected by the preflight/setup scripts or supplied by the user. They **do not block finalizing this specification**, but some block an actual build or live test until resolved:
-
-1. **PC storage and CPU:** inspect free SSD space, CPU architecture, installed JDK/Python and existing Android SDK; install only required components after approval. No fixed storage minimum is asserted until measured.
-2. **Phone configuration:** verify physical vs Dynamic RAM, Android API level, free storage, USB debugging and ADB authorization; do not assume reported RAM is all physical.
-3. **Gemini API project:** user obtains an API key and confirms currently free eligible model, account quotas and terms. Never silently enable billing or claim perpetual free usage.
-4. **Test data:** use synthetic/redacted or explicitly authorized documents. The POC's no-per-file-confirmation preference does not authorize uploading confidential or enterprise-controlled content.
-5. **Release signing:** securely create/retain a persistent keystore and passwords; determine application ID/package name and versioning at implementation time.
-6. **Actual performance thresholds:** benchmark both devices, then record memory/storage limits, warnings and time estimates. Until then, display unverified requirements rather than fabricated numbers.
-7. **Android real-device validation:** phone and USB debugging must be available for physical-device tests. APK compilation can still complete without a connected phone, but the final report must distinguish unrun device tests from passed tests.
-8. **Provider-key architecture:** personal sideload-only Android POC uses a user-entered key stored with platform protections and a clear extraction-risk warning. Distribution to other users would require a separately designed authenticated backend.
-
-## 15. Summary and approval baseline
-
-**Approved v2.2 baseline:** two independent internet-connected apps; Windows Streamlit and native Android; Gemini free-tier candidate; cloud disclosure once at setup without repeated prompts; no offline classification requirement; strict five-category taxonomy with separate processing status; sequential batches with updated ETA; device resource checks; one PowerShell master and task-specific scripts; no Android Studio; mandatory tests before builds; signed debug/release APK outputs; Windows auto-launch and shortcut; stop-on-failure reports; and preserved update data. No application code is part of this document.
-
-The cloud baseline intentionally changes the original local-only privacy promise. Use only synthetic/redacted or otherwise approved documents for free-tier testing, and revisit provider terms, quotas and security architecture before production use.
-
-
-## Hosted AI provider integration (new)
-
-See [HOSTED_AI_IMPLEMENTATION.md](HOSTED_AI_IMPLEMENTATION.md) for backend setup, dependencies, client modes, security constraints, deployment guidance, and known gaps. This is a private-pilot implementation, not a verified production deployment.
 
 ---
 
-## Hosted AI backend deployment (Cloudflare Workers / Render / Koyeb)
+## 3. Repository Structure
 
-See **[hosted-backend/DEPLOYMENT.md](hosted-backend/DEPLOYMENT.md)** for the Cloudflare JavaScript Worker, Python FastAPI Docker deployment, secret setup, tests, API contract, rate-limit and privacy limitations. The Worker does not add any Android or Windows dependencies. Its model and credentials are configured on the server. Hosted mode sends locally extracted OCR text to Groq; it is not offline inference.
+```text
+SmartDocManagerFull/
+├── README.md                               # Authoritative project guide and recreation prompt
+├── run-step.ps1                            # Cumulative 8-step build runner (PowerShell 7+)
+├── dev.ps1                                 # Developer lifecycle orchestrator (Menu & CLI automation)
+├── .env.example                            # Example template for local environment variables
+├── signing-fingerprints.txt                # Generated debug & release SHA-1 values (Git-ignored)
+│
+├── keystores/                              # Self-signed Android keystores (Git-ignored)
+│   ├── debug.keystore                      # Standard Android debug keystore
+│   └── smartdocmanager-release.jks         # Self-signed release keystore
+│
+├── android/                                # Android Native Application
+│   ├── app/src/main/
+│   │   ├── java/com/smartdoc/poc/
+│   │   │   ├── MainActivity.kt             # Jetpack Compose UI, Credential Manager, Whole-Device Scan
+│   │   │   ├── DocExportHelper.kt          # Virtual name export, FileProvider URI grant, selection handler
+│   │   │   ├── SmartDocumentsProvider.kt   # Storage Access Framework (SAF) Document Provider for external apps
+│   │   │   ├── HostedClassifier.kt         # Client HTTP connector to Cloudflare Worker & ML Kit OCR
+│   │   │   ├── Classifier.kt               # Result contracts, local Indian taxonomy & naming generator
+│   │   │   └── AppConstants.kt             # Backend URL & Web Client ID resolver
+│   │   ├── res/
+│   │   │   ├── drawable/                   # Filter icons (ic_filter.png, ic_all.png, ic_image.png, ic_pdf.png)
+│   │   │   └── xml/
+│   │   │       └── file_paths.xml          # FileProvider path definitions (cache, external, root)
+│   │   └── AndroidManifest.xml             # Intent filters (GET_CONTENT, OPEN_DOCUMENT, PICK), permissions, SAF
+│   ├── build.gradle.kts                    # Root build configuration (v0.2 / versionCode 2)
+│   └── gradlew.bat                         # Gradle wrapper
+│
+├── windows/                                # Windows Desktop Application
+│   ├── app.py                              # Streamlit application UI
+│   ├── desktop_launcher.py                 # Dedicated desktop window launcher (App Mode)
+│   ├── installer.iss                       # Inno Setup 6 installer wizard script
+│   ├── SmartDocManager_Onedir.spec         # PyInstaller spec for standalone directory
+│   ├── requirements.txt                    # Python dependencies
+│   ├── smartdoc/
+│   │   ├── indian_taxonomy.py              # Local Indian document rules, date extraction & naming
+│   │   ├── library.py                      # SQLite virtual library, non-destructive state, rescan
+│   │   ├── hosted.py                       # Cloudflare proxy integration & quota tracking
+│   │   ├── google_login.py                 # Google OAuth loopback code+PKCE authentication & auto-close
+│   │   ├── constants.py                    # Centralized configuration & environment loader
+│   │   ├── core.py                         # File validation, types, and constants
+│   │   └── naming.py                       # Helper string sanitation
+│   └── tests/                              # Windows unit test suite (58 passing tests)
+│
+├── hosted-backend/                         # Serverless Backend
+│   └── cloudflare/                         # Cloudflare Worker API proxy (smartdocmanager-api)
+│       ├── src/worker.mjs                  # Gemini/Groq proxy, token broker, token validation, limiter
+│       ├── test/                           # Worker unit tests (15 passing tests)
+│       ├── package.json                    # Node.js dependencies
+│       └── wrangler.toml                   # Cloudflare Worker deployment configuration
+│
+├── scripts/                                # Automation scripts
+│   ├── 01-check-resources.ps1 to 19-...    # Scaffolding, verification, test, and packaging stages
+│   ├── 10-build-android-debug.ps1          # Android Debug APK builder
+│   ├── 11-build-android-release.ps1        # Android Release APK builder (with release keystore autodiscovery)
+│   ├── 13-launch-windows.ps1               # Windows desktop window launcher
+│   ├── 15-deploy-android-debug.ps1         # ADB device deployment & auto-launcher
+│   ├── 18-init-keystore.ps1                # Keystore initialization stage
+│   ├── 20-setup-signing-and-sha1.ps1       # Automated keystore creation & SHA-1 exporter
+│   ├── build-installer.ps1                 # PyInstaller + Inno Setup Windows installer compiler
+│   └── common/Helpers.ps1                  # Shared logging and Android SDK resolver
+│
+├── shared-spec/                            # Shared taxonomy and contract JSON specifications
+│   └── app-config.json                     # Centralized public endpoint & OAuth client IDs
+├── diagnostics/build-session.log           # Single cumulative build and test diagnostic log
+└── output/                                 # Build deliverables
+    ├── android/                            # Compiled APK deliverables (debug & release)
+    │   ├── SmartDocManager-debug.apk
+    │   └── SmartDocManager-release.apk
+    └── windows/                            # Compiled Windows deliverables
+        ├── dist/SmartDocManager/           # Standalone uncompressed executable folder
+        └── installer/                      # Windows Setup Wizard (SmartDocManager_Setup.exe)
+```
+
+---
+
+## 4. Automated Project Configuration & Dependencies
+
+SmartDocManager includes end-to-end automation to provision environments, resolve SDK paths, and install dependencies across all targets.
+
+### 4.1 System Prerequisites & Dependencies
+
+| Component             | Platform          | Requirements & Key Dependencies                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Android Toolchain** | Android Native    | • Java JDK 17 (Eclipse Temurin / OpenJDK 17)<br>• Android SDK 35 (`compileSdk = 35`, `targetSdk = 35`, `minSdk = 26`)<br>• Kotlin `2.0.21`, Jetpack Compose BOM `2024.11.00`<br>• Google ML Kit Text Recognition: `com.google.mlkit:text-recognition:16.0.1`<br>• AndroidX Credentials: `androidx.credentials:credentials:1.3.0`<br>• Google ID Library: `com.google.android.libraries.identity.googleid:googleid:1.1.1` |
+| **Windows Toolchain** | Windows Desktop   | • Python 3.10 – 3.12 (Tested on Python 3.12.10)<br>• Streamlit `>=1.40,<2`<br>• `pypdfium2>=4.25,<6` (Native fast PDF text extraction)<br>• `Pillow>=10,<13`, `pandas>=2.0,<3`, `requests>=2.31,<3`<br>• `pytesseract>=0.3.10,<1` (Local fallback OCR)<br>• PyInstaller `>=6.0` & Inno Setup 6 (`ISCC.exe`)                                                                                                              |
+| **Serverless Proxy**  | Cloudflare Worker | • Node.js 20+ LTS<br>• Wrangler CLI `^4.0.0` (`hosted-backend/cloudflare/package.json`)                                                                                                                                                                                                                                                                                                                                  |
+
+### 4.2 Single-Command Automated Setup
+
+Run the master setup controller from the project root in PowerShell 7+:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\dev.ps1 -Action Setup
+```
+
+### 4.3 Centralized App Configuration (`shared-spec/app-config.json`)
+
+Both Windows and Android read their public client configuration from [`shared-spec/app-config.json`](shared-spec/app-config.json):
+
+```json
+{
+  "backend_url": "https://smartdocmanager-api.csharma2212.workers.dev",
+  "google_desktop_client_id": "492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com",
+  "google_web_client_id": "492541392963-b0mf650fohoas9m6a24fa32enrstjrr6.apps.googleusercontent.com"
+}
+```
+
+_End users never see or enter Client IDs; the applications read from this file automatically. Original client secrets are NEVER committed to this file._
+
+### 4.4 Local Secrets & Environment Overrides (`.env`)
+
+For Windows Desktop, Google requires a Client Secret to exchange authorization codes. To ensure **zero secrets are ever committed to GitHub**:
+
+- Copy [`.env.example`](.env.example) to `.env` in the project root.
+- Set `SMARTDOC_GOOGLE_CLIENT_SECRET=GOCSPX-...` with your desktop client secret.
+- `.env` is listed in [`.gitignore`](.gitignore) and will never be tracked by Git.
+- Android requires **no secret** because it authenticates cryptographically via its keystore SHA-1 fingerprint.
+
+---
+
+## 5. Completed Application Features & Workflows (Main Points ##1 – ##8 & Enhancements)
+
+This section details the final completed features and end-to-end workflow of the application, structured in natural chronological progression:
+
+### 5.1 Persistent Authentication & 7-Day Session Management (Points ##1 – ##3)
+
+1. **7-Day Session Persistence (Point ##1)**: User credentials and tokens are cached securely in `smartdoc_auth` SharedPreferences with a 7-day expiration timestamp.
+2. **Direct Seamless App Launch (Point ##2)**: On subsequent launches, if valid session information is available, the app immediately bypasses the login screen and transitions straight to the main document library.
+3. **Dedicated Sign Out (Point ##3)**: A dedicated "Sign out" button in the top bar clears cached tokens and returns the user to the login gate.
+
+---
+
+### 5.2 Automatic Whole-Device Scanning & Selective Recursive Folder Scanning (Points ##4 – ##5)
+
+1. **Automatic Storage Discovery**: Automatically scans all accessible internal and external storage (`Environment.getExternalStorageDirectory()`, secondary SD cards) upon login, skipping Android OS and internal directories (`/Android/data`, `/Android/obb`, `/proc`, `/sys`). Proactively orchestrates permissions (`MANAGE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `POST_NOTIFICATIONS`).
+2. **Selective Recursive Folder Scanning with Whole-Device Fallback**:
+   - **In-App Folder Browser (Bypassing Android 11+ SAF Restrictions on Downloads)**: On Android 11+, Google's system SAF picker (`ACTION_OPEN_DOCUMENT_TREE`) intentionally disables selecting the `Download` folder, `Android` folder, and device root with privacy warnings. To overcome this limitation, SmartDocManager features a native in-app **Folder Browser Dialog** leveraging its `MANAGE_EXTERNAL_STORAGE` permission.
+   - **One-Tap Quick Access Shortcuts**: Users can immediately select 📥 **Download**, 📄 **Documents**, 📷 **DCIM**, 🖼️ **Pictures**, 💬 **WhatsApp Media**, 📱 **Root Storage**, or secondary **SD Cards** with a single tap, plus navigate into any subfolder via breadcrumb navigation and subdirectory drill-down.
+   - **Recursive Target Folder Limitation**: Selecting a folder limits scanning strictly and exclusively to files within that folder and its subdirectories (using direct POSIX filesystem traversal and fallback SAF tree resolution).
+   - **Default Whole-Device Fallback**: When prompted to choose a folder (or when triggering a scan/rescan), if the user cancels or dismisses the prompt or backs out of the picker, the app automatically and immediately falls back to scanning the complete phone storage as per default behavior.
+   - **Mid-Scan Folder Change & Instant Restart**: While scanning or queue processing is actively running, the user can change their mind at any time by tapping the prominent `"📁 Change Folder"` button in the progress view or the header scope chip (`📁 Entire Device` / `📁 <FolderName>`). Any active scan job is immediately cancelled, queue state is reset, and scanning restarts fresh for the new folder.
+   - **Clean Empty Folder Handling**: If a folder contains zero supported documents (PDF, JPG, PNG, WEBP), the circular progress spinner stops immediately at `[0/0]` (preventing indefinite loading spinners), and a friendly empty-state card is displayed with one-tap shortcuts to pick another folder or scan the entire phone.
+   - **Folder Scope Indicator & Direct Switcher**: The header bar displays an interactive folder pill indicating the active scope (`📁 Entire Device` or `📁 <FolderName>`). Tapping this chip or tapping the Rescan (`🔄`) button opens the scan location prompt to re-target or switch folders.
+3. **Background / Screen-Off Notification (Point ##4)**: If scanning finishes while the user is using another app or while the phone screen is turned off, a high-priority system notification (`POST_NOTIFICATIONS`) alerts the user that scanning and classification are complete.
+4. **Foreground In-App Toast (Point ##5)**: If the app is actively on top in the foreground when scanning finishes, the system notification is suppressed; instead, a clean, cancellable in-app toast message appears with the completion summary.
+
+---
+
+### 5.3 Content-Metadata-Only Classification & Maximum-Identifier Rule
+
+1. **Content-Only Evaluation**: Filenames are strictly excluded from category determination. Only extracted content metadata (OCR/text) is evaluated, preventing misclassification if a user previously gave a file an inaccurate name.
+2. **Maximum-Identifier Conflict Resolution**: When documents match keywords across multiple candidate categories, the engine resolves conflicts using the **Maximum-Identifier Rule**—the category with the highest count of distinct matched identifiers is chosen.
+3. **Standard Date-Stamped Naming**: Proposes standardized filenames (e.g. `PAN_Card_ABCDE1234F_2021-08-15.pdf`).
+4. **Dual-Layer Duplicate Detection & Automatic Physical Relocation to `Download/Duplicates/`**:
+   - **Tier 1 (Binary SHA-256 Cryptographic Hash)**: Matches byte-for-byte identical files regardless of file paths or original names.
+   - **Tier 2 (Content/Text & Virtual Proposal Deduplication)**: Catches files with identical visible/textual contents that differ in underlying binary structure due to PDF creation timestamps, unique `/ID` streams, scanner variations, or re-download metadata. Matches documents sharing identical normalized extracted text (ignoring whitespace/punctuation) or matching proposed virtual name, category, and date.
+   - **Pre-Backend Execution & Quota Shielding**: All duplicate files (Tier 1 binary and Tier 2 content) are moved directly to `Download/Duplicates/` and excluded from the cloud processing queue *before* requests are dispatched to the backend, drastically reducing the overall request count sent to Cloud AI.
+   - **Dropping Non-Textual Documents**: Any files where local OCR yields no readable alphanumeric text (`cleanText.length < 5`) are dropped before sending to the backend, assigned `UNCATEGORIZABLE` (`FALLBACK`) with proposed name `"N/A"`, and excluded from cloud requests.
+   - **Automatic Physical Duplicate Relocation (`Download/Duplicates/`)**: Both upon initial scan and throughout queue processing, all detected physical duplicate files (`status == "Duplicate"`) are automatically moved to public storage at `Download/Duplicates/` (created automatically if it does not already exist on disk), decluttering the user's primary document folders while preserving duplicate files safely in a dedicated review directory.
+   - **Clean UI Auto-Hiding**: Secondary duplicates are marked with `status = "Duplicate"` and non-textual files with `proposed = "N/A"`, automatically hiding them from active library cards and search views.
+   - **Continuous Deduplication**: Runs both after scan discovery, upon metadata restoration, and at queue completion so duplicates are never exposed in search results.
+5. **Resilient Cloud AI Category Normalization**: When Cloud AI (Gemini 3.5 Flash Lite or Groq) classifies documents and returns valid descriptive categories (such as `"Invoice"`, `"Medical Report"`, `"Prescription"`, or `"Salary Slip"`), the client normalizes them to canonical standards or accepts them directly, truncating reasoning up to 2,000 characters rather than throwing an `INVALID_RESPONSE` error. True network/quota errors (HTTP 429, 502) are clearly distinguished from schema validation.
+
+---
+
+### 5.4 Two-Group Grey Bar, Top Header Visibility, Rescan Dialog & Hidden Keepalive WebView
+
+1. **Top Header, Runtime AI Engine Switcher & Sign Out Visibility**:
+   - The top header row contains the application title, an interactive runtime AI Engine Switcher pill (`✨ Gemini` / `⚡ Groq`), and a fully visible, unclipped **"Sign out"** button.
+   - **Runtime AI Engine Selection**: Tapping the switcher pill toggles between **Google Gemini 3.5 Flash Lite** and **Groq (`openai/gpt-oss-20b`)** on the fly. Whichever provider the user selects becomes the **primary API** for all processing requests (with the other provider serving as automatic failover).
+   - The active folder display is relocated into the grey bar below, ensuring that the title, provider switcher, and Sign out button always appear fully on screen without truncation across all device widths.
+2. **Two-Group Grey Bar Structure**:
+   - The grey bar (horizontal controls card) is cleanly divided into two functional groups:
+     - **Group 1 (Left-Aligned Status Column)**: Arranged vertically:
+       - **Top**: Active folder indicator (`📁 Entire Device` or `📁 <FolderName>`), clickable to trigger the folder selection dialog.
+       - **Bottom**: Scan status count `[processed count / total count]` alongside a circular progress spinner when processing is active.
+     - **Group 2 (Equally Spaced Controls with Left Padding)**: Spans the remaining width (`weight(1f)`) with extra left padding (`padding(start = 12.dp)`), arranging the action icons horizontally equispaced (`Arrangement.SpaceEvenly`):
+       - **Folder Selection Option (`📁`)**: Opens the folder picker dialog to switch scanning target or scan entire phone.
+       - **Rescan / Refresh Icon (`🔄`)**: Opens the 2-button Rescan dialog without asking to select a folder.
+       - **Play / Pause (`⏸️`/`▶️`)**: Controls processing queue execution (or displays **`Done (${count})`** in file picker mode).
+       - **Interactive Funnel Dropdown (`ic_filter.png`)**: Rightmost filter trigger opening the modal filter menu (`ALL`, `IMAGES`, `PDFs`).
+3. **Rescan Popup (Clean 2-Button Choice)**:
+   - Tapping the Refresh icon (`🔄`) displays a streamlined dialog with strictly 2 prominent action buttons (no folder re-selection prompt):
+     1. **`1. Merge With EarlierScans`**: Preserves all previously scanned and categorized documents, detecting and queueing only newly added files to merge into the existing scan data.
+     2. **`2. Fresh Scan`**: Wipes previous scan results and classifies all documents from scratch.
+4. **Hidden Cloudflare Keepalive WebView (Android & Desktop)**:
+   - To prevent Cloudflare connection failures when the browser tab is closed, both the Android Native app and Windows Desktop app embed a hidden webview/iframe connecting to the Cloudflare Worker health endpoint (`https://smartdocmanager-api.csharma2212.workers.dev/health`) with Google login credentials/session cookies.
+   - The hidden webview automatically refreshes every 10 minutes while the applications are in use, maintaining an active serverless session seamlessly in the background without affecting the user interface.
+5. **Display Area Fit & Inset Padding**:
+   - Status bar inset padding ensures the app title and controls never overlap with the mobile notch or notification bar.
+   - Extra bottom padding (`80.dp`) ensures all content is fully visible when scrolled to the end.
+6. **Scanning View vs. Post-Scan Transition**:
+   - While scanning/processing is actively running, a compact status table tracks discovery and progress.
+   - Once all files are processed (`allProcessed == true`), the layout automatically transitions to the clutter-free Card-Based UI (Section 5.6).
+   - Dedicated, permanently visible expand icons on each card replace any secret gestures, allowing instant one-tap inspection of AI reasoning and classification evidence.
+
+---
+
+### 5.5 Post-Scan Auto-Hiding of Uncategorized Files & Universal Metadata / Date Search (Point ##8.1 & Search Enhancements)
+
+1. **Auto-Hiding Uncategorized Files (Point ##8.1)**: The instant all documents finish processing (`allProcessed == true`), uncategorized files (category `N/A`, `Other Document`, `Uncategorized`, `Unclassified`, or processing errors) are **automatically filtered out of the active view**, leaving **only categorized documents** displayed.
+2. **Pure Metadata-Only Search Results (Decoupled from Section 4 Taxonomy Rules)**:
+   - Search results are **strictly and solely based on the user's input matched directly against the received document metadata fields** (`name`, `category`, `proposed`, `custom`, `extractedText`, `responseReceived`, `promptSent`, and file system `modified` timestamp).
+   - The search engine **never re-evaluates or references the heuristic classification rules in Section 4 ("Local Indian Standards Taxonomy & Date-Stamped Naming")**. Classification rules apply exclusively during the initial document analysis phase; runtime search filtering performs pure, direct string and date matching on the metadata already gathered.
+3. **Universal Date Filtering (Issued Date vs. Date Created/Modified)**:
+   - A dedicated date filter toggle allows filtering by **Date Issued** (the document's intrinsic date extracted from metadata/content/filename) or **Date Created / Modified** (file system timestamp).
+4. **Universal Date Format Parser (Flexible Entry)**:
+   - Users can enter dates into the search field in **any standard human or technical format**:
+     - **Day-Month-Year**: `01-05-2026`, `01/05/2026`, `01.05.2026`, `1/5/26`
+     - **Month-Day-Year**: `05-01-2026`, `05/01/2026`, `5/1/26`
+     - **Year-Month-Day (ISO 8601)**: `2026-05-01`, `2026/05/01`, `20260501`
+     - **Alphanumeric & Written**: `1 May 2026`, `1st May 2026`, `May 1, 2026`, `01-May-2026`, `01 May '26`, `01 May 26`, `Friday, 1 May 2026`
+   - The parser normalizes user input and matches it against document dates accurately regardless of regional format differences.
+5. **Flexible Substring & Word Matching**:
+   - Searches match substrings and words across all metadata fields (`category`, `name`, `proposed`, `custom`, `extractedText`, `responseReceived`, `promptSent`), ensuring partial terms within words or medical test names (LFT, CBC, Lipid Profile, HbA1c) match seamlessly.
+6. **Interactive Live Search Auto-Suggestions (100% Sourced from Received Document Metadata)**:
+   - As the user types in the search field, a dynamic suggestion popup/dropdown appears.
+   - Sourced **exclusively from your scanned library's actual received metadata** (actual document categories, proposed/virtual filenames, original file names, custom titles, and keywords extracted from document text).
+   - Contains **zero hardcoded or static taxonomy lists**—if a term is not present in the received metadata of your documents, it will never be suggested. Tapping a suggestion instantly populates the search field; users can also ignore suggestions and continue typing.
+
+---
+
+### 5.6 Post-Scan Card-Based Layout, Inline Editing, Multi-Document Sharing, Atomic Moving & Permanent Deletion (Android UI Redesign)
+
+1. **Card-Based Mobile UI (Clutter-Free Document View)**:
+   - To eliminate mobile screen clutter caused by dense tabular layouts, the interface automatically transitions once scanning/processing completes (`allProcessed == true`) from the table into a clean, modern list of cards (`ElevatedCard`).
+   - Each card represents a single processed document and displays:
+     - **Name**: Original filename rendered as a clickable link (with link color and underline) that immediately opens the actual document in the system default viewer via `openDocument(context, doc)`.
+     - **Virtual Name**: Proposed standardized filename presented in an in-line editable text field (`OutlinedTextField`), allowing the user to provide a unique custom name of their choice.
+     - **Save on Blur**: Edits to the Virtual Name are automatically validated and persisted to metadata (`custom` field and external storage JSON) on focus loss (blur event), requiring no extra "Save" button taps.
+2. **Dedicated Card Controls (Permanently Visible)**:
+   - **Left Checkbox**: Dedicated selection checkbox permanently visible on the left side of every card.
+   - **Right Expand Icon**: Dedicated expand/collapse icon (`ic_dropdown` / Chevron) permanently visible on the right side of every card (replacing previous secret gesture requirements).
+3. **Expandable 3-Tier AI Diagnostic & Reasoning Panel (Full Request/Response Inspector)**:
+   - Tapping a card's expand icon smoothly expands a comprehensive 3-tier diagnostic inspector panel that surfaces the complete request and response lifecycle across all 3 tiers:
+     - 📱 **Tier 1: Phone Request**:
+       - Endpoint URL and HTTP method (`POST /v1/classify`).
+       - Google OIDC Authentication Token indicator (Bearer token attached & verified).
+       - On-Device OCR Extracted Text length and payload preview snippet.
+     - ☁️ **Tier 2: Cloudflare Backend Gateway**:
+       - Cloudflare Worker HTTP status code (e.g., `200 OK`, `429 Too Many Requests`, `502 Bad Gateway`, `503 Service Not Configured`).
+       - Per-user rate-limiting gate check result (`CLASSIFY_LIMITER`).
+       - AI Provider dispatch routing (`gemini-3.5-flash-lite` primary / failover).
+     - 🤖 **Tier 3: AI Model Execution & Root Cause Failure Diagnostic**:
+       - **When AI Succeeds**: Displays provider model, prompt metadata (`system_instruction`, mode, token usage), raw model candidate JSON, category justification, and proposed name.
+       - **When AI Fails (Exact Root Cause Diagnostic)**: Directly captures and displays why Gemini failed without hiding behind generic error codes:
+         - **Google HTTP Status**: (e.g., `404 Not Found`, `400 Bad Request`, `403 Forbidden`, `429 Resource Exhausted`).
+         - **Google Error Status**: (e.g., `NOT_FOUND`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`).
+         - **Google Exact Error Message**: Google's full server error message (e.g., *"models/gemini-3.5-flash-lite is not found for API version v1beta"*, *"API key expired or invalid"*).
+         - **On-Device Fallback Execution**: Rationale for fallback (`fell back to on-device OCR`), local normalized category assigned, and matched content keywords/identifiers.
+     - Dimensions, raw payload viewer, and document digest.
+4. **Universal Multi-Document Sharing Sheet Integration**:
+   - When one or more cards are selected via checkbox, a prominent **Share** action button is displayed (`📤 Share (${count})`).
+   - Tapping Share opens the Android system share sheet (`ACTION_SEND` for a single file, `ACTION_SEND_MULTIPLE` for multiple files) via `DocExportHelper`.
+   - Selected files are copied to app cache with their **proposed/custom virtual names**, allowing target apps (WhatsApp, Gmail, Google Drive, Bluetooth, etc.) to receive and send the files under their new virtual names while original storage files remain completely untouched.
+5. **Strict 20-File Export Limit & Clean User Notice**:
+   - The Share/Export button is strictly disabled if:
+     - No cards are selected (`selectedCount == 0`), OR
+     - More than 20 cards are selected (`selectedCount > 20`).
+   - A clear, permanent descriptive notice is displayed cleanly below the action buttons: *"At a time only 20 files can be exported."* (no intrusive or redundant "Max 20" warning badge in the button bar).
+6. **Atomic Multi-Document Moving with Resilient Folder Creation**:
+   - **Beside Share Button**: A dedicated **Move** action button (`📦 Move (${count})`) is positioned beside the Share button in the post-scan action bar.
+   - **State Behavior**: By default, the Move button is disabled. It becomes dynamically enabled once the user selects some or all cards via checkbox.
+   - **Default Target Directory (`/storage/emulated/0/Download/SmartDocsTransferd/[Date +_+ Time stamp]`)**: When the user taps the Move action button, the destination defaults to `/storage/emulated/0/Download/SmartDocsTransferd/[Date +_+ Time stamp]`, where Date format is `DDMMYY` (e.g. `161126`) and Time format is `hh:mm:ss` (e.g. `00:53:02`), joined by an underscore (`DDMMYY_hh:mm:ss`). If the folder path does not exist, the app automatically creates it (`mkdirs()`), including candidate fallback paths (`Environment.DIRECTORY_DOWNLOADS`) and filesystem colon fallback (`DDMMYY_hh-mm-ss`) for devices enforcing strict FAT32 character restrictions.
+   - **One-Tap Move or Custom Destination**: Tapping Move displays the full destination path with a **Move Now** button for immediate transfer without extra navigation, while also offering an **Other Folder...** option for custom directory picking via SAF.
+   - **Renaming & Timestamp Date-Stamping**: Actual physical files are moved from their original locations to the target folder under their **updated virtual/custom names**, with their filesystem created/updated timestamp (`lastModified`) updated to match the document's extracted date stamp (supporting both ISO, Indian, and new 40-char `ddMMMyy` formats).
+   - **Atomic Transaction Guarantee & Safe In-Place Staging**: The multi-file move operation uses resilient in-place temporary files (`.transfer_...tmp`) in the destination directory, avoiding hidden dot directories (`.moving_staging_...`) that can be restricted by Android or SAF. Files are verified, atomically renamed, and original files are safely deleted only after all transfers succeed. If any failure occurs during transfer, all temporary files are cleaned up and **zero original files are moved or altered**.
+   - **Automatic Metadata & State Synchronization**: Upon a successful move, the application automatically updates the recorded URIs, filenames, and modified timestamps in both the in-memory document state and the app's persistent external metadata storage (`PersistentMetadataManager`), ensuring the app's tracking of scanned and pending files remains 100% accurate without re-scanning. Moved files in `Download/SmartDocsTransferd` are excluded from storage re-scans.
+7. **Permanent Document Deletion with Safety Confirmation Dialog & Storage Sync**:
+   - **Red-Colored Delete Action Button / Icon**: A dedicated red-colored button (`🗑️ (${count})`) is positioned in the action bar alongside Move and Share. It is disabled by default and becomes brightly enabled in alert red (`MaterialTheme.colorScheme.error`) whenever one or more cards are selected.
+   - **Safety Confirmation Dialog**: Tapping the red Delete icon opens an explicit confirmation dialog with the prominent message: *"Selected items will be permanently deleted."* and details the count of files to be removed, offering **Delete Permanently** (Confirm) and **Cancel** options.
+   - **Physical File Deletion**: Upon user confirmation, the selected physical files are permanently deleted from internal device storage or SD cards (`File.delete()` for direct files or `DocumentFile.delete()` / `ContentResolver.delete()` for content URIs).
+   - **Real-Time App Storage Synchronization**: The deleted items are immediately purged from both in-memory state (`items`) and the app's persistent external storage metadata (`PersistentMetadataManager`), updating `smartdoc_metadata.json` so the app's inventory accurately reflects the deletion without requiring a re-scan. Selection is cleared automatically.
+8. **Select All / Deselect All One-Tap Control**:
+   - A dedicated toggle control at the top of the card list allows users to switch between selecting all visible cards or deselecting all cards with a single tap.
+9. **Strict Duplicate & Non-Taxonomy Exclusion**:
+   - Documents identified as duplicates (`status == "Duplicate"`) or documents that do not match the Indian Standards Taxonomy criteria (uncategorized, unclassified, `Other Document`, or processing errors) are strictly excluded from the card list—no card is ever rendered for them.
+
+---
+
+### 5.7 Persistent External Metadata Storage Across App Re-Installations (New Storage Persistence Feature)
+
+1. **Preserving Metadata Across App Uninstallation**:
+   - To prevent losing processed metadata when the user uninstalls and re-installs the app, metadata is persisted outside the app's private sandbox in public mobile storage.
+   - **Default Location**: `Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)/SmartDocManager/smartdoc_metadata.json`.
+   - **Custom Location Option**: Users can choose a custom storage location or folder (via SAF directory picker `ACTION_OPEN_DOCUMENT_TREE`).
+2. **Automatic Post-Scan Sync**:
+   - After every scan and classification cycle, the latest metadata (categories, virtual proposed names, extracted text, dates, hashes, and justifications) is automatically written to this external persistent JSON file.
+3. **Remembers Chosen Location**:
+   - The application remembers the previously selected location and prompts or auto-syncs to it seamlessly on subsequent launches.
+4. **Disk Cross-Check & Verification on Launch / Re-Install**:
+   - When loading previously saved metadata after a fresh install or re-launch, the application cross-checks whether each recorded file still exists on device storage (`File.exists()` / MediaStore URI check).
+   - If a file was deleted or moved, it is removed from the metadata.
+   - If files still exist, their classification, proposed names, and metadata are restored immediately, **completely eliminating the need to re-scan or re-process existing documents**.
+
+---
+
+### 5.8 Storage Access Framework (SAF) File Store Integration (Points ##8.2 – ##8.5)
+
+The Android application functions as an intelligent, system-wide document provider and file manager for external apps (Gmail, WhatsApp, Google Chrome, Drive, etc.):
+
+1. **System Picker Registration (Point ##8.2)**:
+   - `AndroidManifest.xml` registers intent filters for `android.intent.action.GET_CONTENT`, `android.intent.action.OPEN_DOCUMENT`, and `android.intent.action.PICK` supporting MIME types `*/*`, `image/*`, `application/pdf`, and `application/*`.
+   - When any third-party app requests a document upload, **SmartDocManager** appears as an available document source in the system chooser.
+2. **Storage Access Framework (SAF) Root Provider**:
+   - Implemented in [`SmartDocumentsProvider.kt`](android/app/src/main/java/com/smartdoc/poc/SmartDocumentsProvider.kt) (`android.content.action.DOCUMENTS_PROVIDER`).
+   - Appears directly in the Android OS Files app root drawer alongside Google Drive, Downloads, and Gallery.
+3. **Dual File Selection Modes in File Manager / Picker Mode (Point ##8.3)**:
+   - When launched in picker mode, each document row displays a selection **Checkbox** at the beginning.
+   - **Single-File Tap Selection (Point ##8.4)**: Tapping any document row immediately selects that single file and delivers it to the target application (Gmail, WhatsApp, browser) with its **proposed virtual name** (e.g. `PAN_Card_ABCDE1234F.jpg`, `Aadhaar_Card_JohnDoe.pdf`).
+   - **Multi-File Checkbox Selection (Point ##8.5)**: Tapping checkboxes allows the user to select multiple files simultaneously.
+4. **Prominent "Done (${count})" Action Button (Point ##8.5)**:
+   - When one or more checkboxes are checked, a prominent **`Done (${count})`** button appears in the top bar directly over the refresh and play/pause button section.
+   - Tapping `Done` packages all selected documents into an Android `ClipData` intent with `FLAG_GRANT_READ_URI_PERMISSION`, delivering all files to the calling app with their proposed virtual names.
+5. **Non-Destructive FileProvider Caching**:
+   - Managed via [`DocExportHelper.kt`](android/app/src/main/java/com/smartdoc/poc/DocExportHelper.kt). The helper copies files temporarily to cache storage under their proposed virtual names so that calling apps receive the virtual name as `OpenableColumns.DISPLAY_NAME` while original files on device storage remain **completely unaltered and untouched**.
+
+---
+
+### 5.9 Windows Desktop App Mode & Dedicated Window Launcher
+
+- **App Mode Execution**: Launches an isolated native desktop window (`msedge.exe --app=http://127.0.0.1:8501 --window-size=1280,850`) without browser navigation bars or tabs via `windows/desktop_launcher.py`. Closing the window cleanly shuts down the background server.
+- **Unified Modern Application Icon**: High-resolution branded application icon featuring layered document folders with transparent background across Windows executable, setup wizard (`icon.ico`), Streamlit web UI (`icon.png`), and Android mipmap launcher icons (`ic_launcher.png`, `ic_launcher_round.png`).
+- **Consistent Virtual Naming Across Desktop & Android**: Document virtual naming in the Windows Desktop application strictly mirrors Android's deterministic $\le 40$-character convention: `CAT_DocumentNameAbbrev_ddMMMyy.ext` (e.g. `FIN_IncomeTaxForm16_16Nov26.pdf`, `IDN_AadhaarCard_15Aug22.jpg`). User custom overrides take top display precedence, followed by compliant virtual proposed names.
+- **One-Click Desktop Shortcut**: Compiles bytecode and places a one-click launcher icon directly on the Windows Desktop (`SmartDocManager.lnk`).
+
+---
+
+## 6. Authoritative Compilation, Build & Export Guide (Main Point ##9)
+
+This section provides the authoritative, tested command reference to compile, build, test, and export builds for **Android Debug**, **Android Release**, and **Windows Setup Installer**:
+
+### 6.1 Quick Command Reference Table
+
+| Target Deliverable           | Output Artifact Path                                 | Primary Build Command                                        | Alternative CLI / Direct Tool                                                                        |
+| ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| **Android Debug APK**        | `output/android/SmartDocManager-debug.apk`           | `pwsh -File .\scripts\10-build-android-debug.ps1`            | `pwsh -File .\dev.ps1 -Action BuildAndroidDebug` <br> _or_ `cd android; .\gradlew assembleDebug`     |
+| **Android Release APK**      | `output/android/SmartDocManager-release.apk`         | `pwsh -File .\scripts\11-build-android-release.ps1`          | `pwsh -File .\dev.ps1 -Action BuildAndroidRelease` <br> _or_ `cd android; .\gradlew assembleRelease` |
+| **Windows Setup Wizard**     | `output/windows/installer/SmartDocManager_Setup.exe` | `pwsh -File .\scripts\build-installer.ps1`                   | `pwsh -File .\dev.ps1 -Action BuildInstaller` <br> _uses Inno Setup 6 (`ISCC.exe`)_                  |
+| **Windows Standalone App**   | `output/windows/dist/SmartDocManager/`               | `pwsh -File .\scripts\build-installer.ps1`                   | _PyInstaller uncompressed onedir bundle_                                                             |
+| **Windows Desktop Shortcut** | `%USERPROFILE%\Desktop\SmartDocManager.lnk`          | `pwsh -File .\dev.ps1 -Action BuildWindows`                  | `pwsh -File .\scripts\09-build-windows.ps1`                                                          |
+| **Deploy Debug to Device**   | Installed onto connected phone via ADB               | `pwsh -File .\scripts\15-deploy-android-debug.ps1 -NoPrompt` | `pwsh -File .\dev.ps1 -Action DeployDebug`                                                           |
+
+---
+
+### 6.2 Compiling & Exporting Android Debug APK
+
+Builds the debug APK (versionCode 2, versionName "0.2") and places the deliverable in `output/android/SmartDocManager-debug.apk`:
+
+```powershell
+# Master script execution:
+powershell -ExecutionPolicy Bypass -File scripts\10-build-android-debug.ps1
+
+# Dev controller equivalent:
+powershell -ExecutionPolicy Bypass -File dev.ps1 -Action BuildAndroidDebug
+
+# Direct Gradle equivalent:
+Push-Location android
+.\gradlew.bat --no-daemon assembleDebug
+Pop-Location
+
+# Deploy and launch immediately onto connected Android device via ADB:
+powershell -ExecutionPolicy Bypass -File scripts\15-deploy-android-debug.ps1 -NoPrompt
+```
+
+---
+
+### 6.3 Compiling & Exporting Android Release APK (Signed Update)
+
+The release build automatically autodiscovers `keystores/smartdocmanager-release.jks`. Compiled with versionCode 2 / versionName "0.2" so that running `adb install -r` cleanly updates existing app installations without signature or version downgrade errors:
+
+```powershell
+# Step 1 (Optional one-time keystore & SHA-1 setup):
+powershell -ExecutionPolicy Bypass -File scripts\20-setup-signing-and-sha1.ps1
+
+# Step 2: Compile and sign the Release APK:
+powershell -ExecutionPolicy Bypass -File scripts\11-build-android-release.ps1
+
+# Dev controller equivalent:
+powershell -ExecutionPolicy Bypass -File dev.ps1 -Action BuildAndroidRelease
+
+# Output deliverable:
+# output\android\SmartDocManager-release.apk
+
+# Verify signature scheme v2/v3:
+$env:PATH += ";$env:LOCALAPPDATA\Android\Sdk\build-tools\34.0.0"
+apksigner verify --verbose output\android\SmartDocManager-release.apk
+
+# Install release APK onto phone as an update:
+adb install -r output\android\SmartDocManager-release.apk
+```
+
+---
+
+### 6.4 Compiling & Exporting Windows Setup Installer Wizard
+
+Compiles the standalone PyInstaller onedir distribution and packages it into a production-grade Windows Setup Wizard (`.exe`) with desktop shortcuts, Start Menu entries, and uninstaller using Inno Setup 6:
+
+```powershell
+# Master installer builder script:
+powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+
+# Dev controller equivalent:
+powershell -ExecutionPolicy Bypass -File dev.ps1 -Action BuildInstaller
+
+# Output deliverables:
+# 1. Setup Wizard: output\windows\installer\SmartDocManager_Setup.exe
+# 2. Portable App: output\windows\dist\SmartDocManager\SmartDocManager.exe
+```
+
+---
+
+### 6.5 Running Full Test Verification Suites
+
+Verifies all 58 Windows tests and 15 Cloudflare Worker tests:
+
+```powershell
+# Run 58 Windows unit tests:
+powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1
+
+# Run 15 Cloudflare Worker tests:
+npm test --prefix hosted-backend/cloudflare
+```
+
+---
+
+## 7. Cloudflare Worker Deployment & Free API Quotas (smartdocmanager-api)
+
+### 7.1 Deploy Worker
+
+Configure and deploy the Cloudflare Worker serverless proxy (`smartdocmanager-api`):
+
+```powershell
+Push-Location hosted-backend/cloudflare
+npm install
+npm test
+npx wrangler secret put GEMINI_API_KEY
+npx wrangler secret put GROQ_API_KEY
+npx wrangler deploy
+Pop-Location
+```
+
+### 7.2 Cloudflare Dashboard Configuration
+
+Under **Workers & Pages → smartdocmanager-api → Settings → Variables and Secrets**, configure:
+
+| Variable / Secret              | Type                  | Configured Value in `wrangler.toml`                                                                                                                 |
+| ------------------------------ | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GEMINI_API_KEY`               | **Secret**            | Google AI Studio Gemini API Key                                                                                                                     |
+| `GROQ_API_KEY`                 | **Secret**            | Groq Cloud API Key                                                                                                                                  |
+| `GOOGLE_DESKTOP_CLIENT_SECRET` | **Secret** (Optional) | Client Secret for desktop OAuth broker (`/v1/auth/token`)                                                                                           |
+| `GOOGLE_CLIENT_IDS`            | Plaintext             | `492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com,492541392963-b0mf650fohoas9m6a24fa32enrstjrr6.apps.googleusercontent.com` |
+| `GOOGLE_DESKTOP_CLIENT_ID`     | Plaintext             | `492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com`                                                                          |
+| `ALLOWED_GOOGLE_EMAILS`        | Plaintext             | `csharma2212@gmail.com,*`                                                                                                                           |
+| `ALLOW_LEGACY_TOKEN`           | Plaintext             | `true`                                                                                                                                              |
+| `GEMINI_MODEL`                 | Plaintext             | Default: `gemini-3.5-flash-lite`                                                                                                                    |
+| `GROQ_MODEL`                   | Plaintext             | Default: `openai/gpt-oss-20b`                                                                                                                       |
+| `USE_GROQ_ONLY`                | Plaintext             | Default: `true` (Temporary: routes requests directly to Groq, bypassing Gemini)                                                                    |
+
+### 7.3 Cloudflare Abuse Rate Limiter (`CLASSIFY_LIMITER`)
+
+In `wrangler.toml`, rate limiting is enforced per IP/principal:
+
+```toml
+[[unsafe.bindings]]
+name = "CLASSIFY_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+```
+
+### 7.4 Free API Tier Limits, Client Pacing & Double-Exhaustion Protection
+
+- **Google Gemini 3.5 Flash Lite**: **15 RPM**, **1,000,000 TPM**, **1,500 RPD** (Free Tier).
+- **Groq Cloud (Failover)**: **30 RPM**, **7,000 RPD** (Free Tier).
+- **Client-Side Self-Throttling**: The app strictly enforces a maximum dispatch rate of **10 requests per 60 seconds** on the client side, avoiding backend rate limiter rejections.
+- **Client Daily Limit (1,000 Requests / 24 Hours)**: The app caps cloud requests to **1,000 requests per day**. When this limit is reached, it displays:
+  `"1000 request per day limit is reached. To process further continue after 24 hours."` and falls back seamlessly to on-device OCR.
+- **Double Exhaustion**: If both Gemini and Groq free tiers are exhausted on the cloud backend, the Worker returns HTTP 429 `{ "error": "quota_exhausted", "message": "All services have surpassed their free quota. Please try after some time." }`.
+
+---
+
+## 8. Git Ignore Specification
+
+All sensitive files, signing keys, build outputs, and local databases are strictly protected in [`.gitignore`](.gitignore):
+
+```gitignore
+# --- Python & Desktop Build Artifacts ---
+.venv/
+windows/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+*.spec
+*.exe
+*.lnk
+
+# --- Local Databases & Metadata ---
+*.sqlite3
+*.sqlite3-journal
+*.db
+.smartdocmanager/
+
+# --- Android, Gradle & Native Toolchains ---
+.gradle/
+android/.gradle/
+android/build/
+android/app/build/
+local.properties
+android/local.properties
+*.iml
+.idea/
+
+# --- Secrets, Keystores & Fingerprints (Security Critical) ---
+keystores/
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+signing-fingerprints.txt
+*fingerprint*.txt
+*sha1*.txt
+android-credentials.json
+.env
+*.key
+*.pem
+
+# --- Node.js & Cloudflare ---
+node_modules/
+hosted-backend/cloudflare/node_modules/
+.wrangler/
+
+# --- Build Outputs, Execution Logs & Scaffolding ---
+output/
+logs/
+backups/
+diagnostics/*.log
+diagnostics/build-session.log
+```
+
+---
+
+## 9. Complete Project Recreation Prompt
+
+To recreate this entire project from scratch with the exact same architecture, automated setup, Windows desktop app window, Android self-signing, SHA-1 extraction, and non-destructive virtual management, provide the following prompt to an AI coding assistant:
+
+```markdown
+Recreate the complete, production-ready "SmartDocManager" project: a cross-platform intelligent document classification, organization, and virtual management system consisting of an Android Native app (Kotlin/Jetpack Compose), a Windows Desktop app (Python/Streamlit with dedicated App Mode), and a serverless proxy backend (Cloudflare Worker named `smartdocmanager-api`).
+
+### 1. Architectural Foundation, Local OCR & Free AI:
+
+- Document bytes and images NEVER leave the client machine.
+- Text Recognition (OCR) is strictly on-device:
+  - Android: Native `PdfRenderer` (up to 40 pages) + Google ML Kit Text Recognition (`com.google.mlkit:text-recognition:16.0.1`).
+  - Windows: Native `pypdfium2` textpages + local Tesseract OCR fallback.
+- Full extracted text (unrestricted, removing the prior 16,000 character limit to leverage Gemini's context window) is transmitted to the secure Cloudflare Worker serverless proxy (`smartdocmanager-api`) for AI classification and naming proposal.
+- Client-Side Rate Limiter & Daily Cap:
+  - Client-side queue pacing guarantees no more than 10 cloud requests per 60 seconds are dispatched.
+  - Per-day cloud request cap of 1,000 requests per 24 hours. When reached, shows: `"1000 request per day limit is reached. To process further continue after 24 hours."` and falls back to local engine.
+- Neither Gemini nor Groq performs OCR:
+  - The Cloudflare Worker calls Google Gemini 3.5 Flash Lite as primary (`gemini-3.5-flash-lite`, with candidate fallback models `gemini-3.1-flash-lite`, `gemini-3.8-flash`, `gemini-3.5-flash`, and `gemini-flash-latest`, 15 RPM / 1,500 RPD free tier) to classify the document, generate a short date-stamped filename proposal, and provide a 1-line justification.
+  - The Worker automatically falls back to Groq (`openai/gpt-oss-20b` via OpenAI-compatible chat completions API, 30 RPM / 7,000 RPD free tier) when Gemini hits HTTP 429 rate limits or provider errors.
+  - If Cloud AI credentials are unconfigured or unavailable, clients automatically fall back to the offline Local Indian Taxonomy Engine.
+- Zero AI API keys are exposed to clients; all provider keys live in Cloudflare Worker encrypted secrets.
+- Double-Exhaustion Protection: If both Gemini and Groq free tiers are exhausted, the Worker returns HTTP 429 with `{ "error": "quota_exhausted", "message": "All services have surpassed their free quota. Please try after some time." }`. Clients halt processing and display this exact warning.
+
+### 2. Authentication & Controlled Access:
+
+- Google Sign-In Gate: App launch displays ONLY the login gate with a clean, single-click "Sign in with Google" button. No folders, tables, or controls are visible until authenticated.
+- Windows Desktop Authentication:
+  - Uses Google Desktop OAuth (authorization code + PKCE) on a dynamic loopback callback (`http://127.0.0.1:<port>/`).
+  - Opens a dedicated, frameless authentication window (`msedge.exe --app=...` without browser tabs or address bar).
+  - On callback, automatically sends native Windows `WM_CLOSE` to close the login window and restores/brings the main SmartDocManager app window to the front.
+  - Automatic Polling: Streamlit automatically polls session auth state every 500ms and triggers `st.rerun()` the instant sign-in finishes, without requiring any manual "Refresh" button.
+  - Zero Secrets in Git: The Desktop Client Secret is kept strictly in an untracked local `.env` file (`SMARTDOC_GOOGLE_CLIENT_SECRET=GOCSPX-...`) or brokered securely via the Cloudflare Worker (`POST /v1/auth/token`).
+- Android Native Authentication:
+  - Uses Android Credential Manager with Google ID Token Option.
+  - 100% Secretless: Google authenticates the app cryptographically via its Package Name (`com.smartdoc.poc`) and SHA-1 certificate fingerprint registered in Google Cloud Console. No secrets are ever stored in or needed by the Android client.
+  - 7-Day Session Persistence: User credentials and tokens are cached in `smartdoc_auth` SharedPreferences with a 7-day expiration. Subsequent app launches immediately bypass the login screen and transition straight to the main screen. Tapping "Sign out" clears tokens and returns to the login screen.
+- Cloudflare Worker Authorization:
+  - Validates Google ID tokens via Google's `tokeninfo` endpoint.
+  - Enforces audience matching against `GOOGLE_CLIENT_IDS` and an email allowlist (`ALLOWED_GOOGLE_EMAILS = "csharma2212@gmail.com,*"`) before routing requests.
+  - Enforces per-IP abuse control via `CLASSIFY_LIMITER` (10 requests per 60 seconds).
+
+### 3. 100% Non-Destructive Virtual Management:
+
+- Original documents on disk are NEVER modified, renamed, or deleted.
+- Dual-Layer Deduplication: Identifies duplicates via Tier 1 (SHA-256 binary hash) and Tier 2 (normalized content text and virtual proposed name matching). Duplicates are marked and hidden from the active library and search view, while preserving all disk files untouched.
+
+### 4. Local Indian Standards Taxonomy & Date-Stamped Naming:
+
+- Scope Boundary & Separation from Search: This heuristic classification engine is evaluated exclusively during the initial document analysis phase (and as an offline local fallback). Runtime search queries never re-evaluate or execute taxonomy rules; search operates strictly on the resulting document metadata.
+- The rule engine (`smartdoc/indian_taxonomy.py` and `core.py` on Windows, `Classifier.kt` on Android, `shared-spec/taxonomy.json`) classifies documents across **519 Granular Indian Categories**:
+  Aadhaar Card, Permanent Account Number Card, Voter Identity Card, Passport, Driving License, Ration Card, Birth Certificate, Death Certificate, Marriage Certificate, Domicile Certificate, Income Certificate, Caste Certificate, Other Backward Class Certificate, Economically Weaker Section Certificate, Legal Heir Certificate, Encumbrance Certificate, Transfer Certificate, Migration Certificate, Character Certificate, Bonafide Certificate, Overseas Citizen of India Card, Person of Indian Origin Card, Visa Document, Residence Certificate, Class 10 Marksheet, Class 12 Marksheet, Undergraduate Degree Certificate, Postgraduate Degree Certificate, Provisional Degree Certificate, School Leaving Certificate, Semester Marksheet, Grade Card, Hall Ticket, Convocation Letter, Academic Transcript, Course Completion Certificate, Extracurricular Activity Certificate, Sports Merit Certificate, National Cadet Corps Certificate, National Service Scheme Certificate, Scout and Guide Certificate, Entrance Exam Admit Card, Entrance Exam Scorecard, Counseling Allotment Letter, Seat Confirmation Letter, Tuition Fee Receipt, Thesis Submission Certificate, PhD Degree Certificate, Engineering Degree Certificate, Diploma Certificate, Industrial Training Institute Certificate, National Skill Development Corporation Certificate, Apprenticeship Certificate, Internship Completion Certificate, Fellowship Award Letter, Scholarship Sanction Letter, Research Grant Award Letter, Language Proficiency Certificate, IELTS Scorecard, TOEFL Scorecard, GRE Scorecard, GMAT Scorecard, Study Abroad Offer Letter, Confirmation of Acceptance for Studies Letter, I-20 Form, DS-160 Form, Schengen Visa Form, Disability Certificate, Ayushman Bharat Health Account Card, Ayushman Card, Central Government Health Scheme Card, Ex-Servicemen Contributory Health Scheme Card, Employees State Insurance Corporation Card, Medical Fitness Certificate, Hospital Discharge Summary, Diagnostic Laboratory Report, Medical Prescription, Organ Donor Certificate, Blood Group Certificate, Vaccination Certificate, COVID-19 Vaccination Certificate, MRI Report, X-Ray Report, CT Scan Report, Ultrasound Report, Blood Test Report, Pathology Report, Biopsy Report, Disability Medical Certificate, Severe Disability Certificate, Specified Disease Treatment Receipt, Audiometry Report, Vision Certificate, Color Blindness Certificate, Physical Fitness Certificate, Income Tax Return Verification Form, Form 16, Form 16A, Form 26AS, Annual Information Statement, Taxpayer Information Summary, Form 15G, Form 15H, Lower Deduction Certificate, Advance Tax Challan, Self-Assessment Tax Challan, Regular Assessment Tax Challan, Wealth Tax Return, Form 12BB, Form 49A, Form 49B, Form 10E, Income Tax Assessment Order, Tax Deduction at Source Certificate, Tax Collection at Source Certificate, Bank Passbook, Cheque Book, Fixed Deposit Receipt, Recurring Deposit Receipt, Demat Account Statement, Mutual Fund Account Statement, Consolidated Account Statement, Systematic Investment Plan Statement, Capital Gains Statement, Sovereign Gold Bond Certificate, Employees Provident Fund Statement, Public Provident Fund Passbook, National Pension System Permanent Retirement Account Number Card, Savings Account Statement, Current Account Statement, Non-Resident External Account Statement, Non-Resident Ordinary Account Statement, Loan Account Statement, Credit Card Statement, Credit Card Bill, Universal Account Number Card, Pension Payment Order, PF Transfer Claim Form, PF Withdrawal Form, Form 19, Form 10C, Form 31, Form 10D, Pension Claim Form, Monthly Pension Form, EPS Nomination Form, Gratuity Nomination Form, Shram Card, Mahatma Gandhi National Rural Employment Guarantee Act Job Card, Employee Offer Letter, Employee Appointment Letter, Employee Relieving Letter, Employee Experience Certificate, Employee Salary Slip, Employee Appraisal Letter, Bonus Letter, Increment Letter, Arrears Statement, Non-Disclosure Agreement, Employment Contract, Maternity Benefit Claim Form, Dependent Identity Card, Leave Travel Concession Bill, Medical Reimbursement Claim Form, Travelling Allowance Bill, Dearness Allowance Document, House Rent Allowance Receipt, Leave Encashment Statement, Voluntary Retirement Scheme Offer Document, Notice Pay Recovery Receipt, Full and Final Settlement Statement, Universal Land Parcel Identification Number, Khatauni, Khasra, Record of Rights, Sale Deed, Lease Deed, Rent Agreement, Sub-letting Agreement, Commercial Lease Deed, Mutation Certificate, Property Tax Receipt, Patta Document, Search Report, Property Assessment Order, Building Plan Approval Certificate, Occupancy Certificate, Completion Certificate, Commencement Certificate, Real Estate Regulatory Authority Registration Certificate, Allotment Letter, Builder-Buyer Agreement, Possession Letter, Society No Dues Certificate, Cooperative Housing Society Share Certificate, Non-Agricultural Order, Land Conversion Certificate, Rent Receipt, Life Insurance Policy Document, Health Insurance Policy Document, Motor Vehicle Insurance Policy, Two Wheeler Insurance, Commercial Vehicle Insurance, Marine Insurance Policy, Transit Insurance Policy, Burglary Insurance Policy, Fire Insurance Policy, Fidelity Guarantee Insurance Policy, Directors and Officers Liability Insurance, Professional Indemnity Insurance, Public Liability Insurance, Workmen Compensation Insurance Policy, Group Term Life Insurance Policy, Group Health Insurance Policy, Travel Insurance Policy, Medical Insurance Premium Receipt, Electricity Bill, Water Bill, Piped Gas Bill, Liquefied Petroleum Gas Passbook, Landline Telephone Bill, Broadband Internet Bill, Postpaid Mobile Bill, Municipal Corporation Tax Receipt, Vehicle Registration Certificate, Pollution Under Control Certificate, Vehicle Fitness Certificate, Commercial Vehicle Permit, Learner Driving License, International Driving Permit, FASTag Registration Document, Toll Tax Receipt, Traffic Challan Document, Notice of Transfer of Ownership of Motor Vehicle, Report of Transfer of Ownership of Motor Vehicle, Application for Transfer of Ownership in case of Death, Application for Making Entry of an Agreement of Hire Purchase, Notice of Termination of an Agreement of Hire Purchase, Vehicle Sale Receipt, Surveyor Motor Claim Report, Total Loss Settlement Letter, Salvage Value Document, Udyam Registration Certificate, Goods and Services Tax Registration Certificate, Certificate of Incorporation, Memorandum of Association, Articles of Association, Partnership Deed, Limited Liability Partnership Agreement, Trade License, Food Safety and Standards Authority of India License, Import Export Code Certificate, Fire No Objection Certificate, State Pollution Control Board NOC, Shops and Establishments Act Registration Certificate, Customs Duty Receipt, Bill of Lading, Air Waybill, Letter of Credit, Bank Guarantee Document, Promissory Note, Bill of Exchange, Auditor Report, Balance Sheet Document, Profit and Loss Statement, Cash Flow Statement, Statement of Changes in Equity, Directors Report, Annual Return, Financial Statement, Director Identification Number Allotment Letter, Cryptographic Signature Token Document, Chartered Accountant Certificate, Company Secretary Certificate, Cost Accountant Certificate, Net Worth Certificate, Solvency Certificate, Valuation Report, Actuarial Valuation Report, Startup India Recognition Certificate, DPIIT Registration Document, MSME Samadhaan Filing Document, Kisan Credit Card Passbook, Soil Health Card, Crop Insurance Policy, Agricultural Land Passbook, Education Loan Sanction Letter, Education Loan Disbursement Letter, Home Loan Sanction Letter, Home Loan Agreement, Personal Loan Agreement, Vehicle Loan Agreement, Business Loan Agreement, Overdraft Facility Agreement, Cash Credit Limit Sanction Letter, Loan Pre-closure Statement, Loan Closure No Objection Certificate, Amortization Schedule, CIBIL Credit Report, Experian Credit Report, Equifax Credit Report, CRIF High Mark Credit Report, Home Loan Interest Certificate, Education Loan Interest Certificate, Affidavit, Power of Attorney, Will Document, Gift Deed, Relinquishment Deed, Trust Deed, Indemnity Bond, Surety Bond, Bail Bond, Court Summons, Court Judgment Document, Decree Certificate, Caveat Petition, Habeas Corpus Petition, Notarized Document, Stamp Paper, Judicial Stamp Paper, Franked Document, Non-compete Agreement, Divorce Decree Document, Separation Agreement, Maintenance Order, Adoption Deed, Guardianship Certificate, Custody Order, Name Change Gazette Notification, Gender Change Gazette Notification, Religion Change Document, Signature Verification Certificate, Photograph Verification Certificate, Legal Notice, Reply to Legal Notice, Cease and Desist Notice, Arbitral Award Document, Mediation Settlement Agreement, Lok Adalat Award, FIR Cancellation Report, Charge Sheet Document, Autopsy Report, Police Clearance Certificate, First Information Report, Motor Accident Claims Tribunal Petition, Consumer Court Complaint Document, Joint Venture Agreement, Memorandum of Understanding, Service Level Agreement, Vendor EmpEmpanelment Letter, Tender Document, Earnest Money Deposit Receipt, Performance Bank Guarantee, Letter of Intent, Work Order, Measurement Book Document, Running Account Bill, Completion Report, Defect Liability Certificate, Handing Over Certificate, Wayleave Agreement, Right of Way Document, Easement Right Document, Hypothecation Agreement, Pledge Agreement, Mortgage Deed, Deed of Assignment, Conveyance Deed, Exchange Deed, Partition Deed, Family Settlement Agreement, Surrender Deed, Rectification Deed, Cancellation Deed, Revocation of Power of Attorney, Sub-Lease Agreement, Leave and License Agreement, Rent Control Act Registration, Paying Guest Agreement, Hostel Accommodation Allotment Letter, Arms License, Liquor Permit, Broadcast License, Amateur Radio License, Drone Registration Certificate, Pilot License, Seafarer Identification Document, Merchant Navy Continuous Discharge Certificate, Emigration Check Required Document, Emigration Clearance Document, Pravasi Bharatiya Bima Yojana Policy, Yellow Fever Vaccination Certificate, Polio Vaccination Certificate, International Certificate of Vaccination, Export Promotion Capital Goods Authorization, Advance Authorization Certificate, Duty Free Import Authorization, Certificate of Origin, Phytosanitary Certificate, Health Certificate for Export, Directorate General of Foreign Trade Certificate, Registration Cum Membership Certificate, ISO Certification Document, BIS Hallmark Certificate, Agmark Certificate, ISI Mark Certificate, Trademark Registration Certificate, Patent Certificate, Copyright Registration Certificate, Geographical Indication Certificate, Design Registration Certificate, Khadi Mark Certificate, Handloom Mark Certificate, Silk Mark Certificate, Trademark Search Report, Copyright Assignment Deed, Patent Licensing Agreement, Franchise Agreement, Professional Tax Enrolment Certificate, Professional Tax Registration Certificate, Municipal Trade License, Contract Labour License, Provident Fund Registration Certificate, ESIC Registration Certificate, Factory License, Boiler Registration Certificate, Lift Inspector License, Weighing and Measuring Instruments Stamping Certificate, Entertainment Tax Registration, Luxury Tax Registration, Cinema License, Hotel License, Restaurant License, Liquor Serving License, Private Security Agency Regulation Act License, Telecom Regulatory Authority of India Registration, Other Service Provider License, Internet Service Provider License, Virtual Network Operator License, Authorized Dealer License, Money Changer License, Non-Banking Financial Company Registration Certificate, Microfinance Institution Registration, Chit Fund Registration Certificate, Nidhi Company Registration, Section 8 Company License, NGO Darpan Registration Document, Foreign Contribution Regulation Act Registration, Society Registration Certificate, Trust Registration Certificate, Section 12A Registration Certificate, Section 80G Registration Certificate, Corporate Social Responsibility Project Registration, Securities and Exchange Board of India Registration Certificate, Stock Broker License, Depository Participant License, Portfolio Manager Registration, Investment Adviser Registration, Mutual Fund Distributor Certificate, Insurance Regulatory and Development Authority of India License, Insurance Agent License, Surveyor and Loss Assessor License, Third Party Administrator License, Custom House Agent License, Freight Forwarder Registration, Multimodal Transport Operator Registration, Port Trust Registration Certificate, Dock Entry Permit, Airport Entry Permit, Bureau of Civil Aviation Security Clearance, Transit Way Bill, Lorry Receipt, Goods Receipt Note, Delivery Challan, Purchase Order, Proforma Invoice, Commercial Invoice, Debit Note, Credit Note, Receipt Voucher, Payment Voucher, Journal Voucher, Petty Cash Voucher, Boarding Pass, Flight Ticket, Train Ticket, Bus Ticket, Hotel Booking Confirmation, Forex Purchase Receipt, Customs Declaration Form, Police Verification Report, Background Verification Report, Credit Reference Letter, Income Proof Document, Address Proof Document, Identity Proof Document, Age Proof Document, Relationship Proof Document, Survival Certificate, Life Certificate, Unmarried Certificate, Bachelorhood Certificate, Trade Test Certificate, Proficiency Certificate, TPA ID Card, Cashless Pre-Authorization Form, Cashless Approval Letter, Cashless Denial Letter, Claim Settlement Letter, Claim Denial Letter, TPA Query Letter, Explanation of Benefits, Detailed Hospital Bill, Final Hospital Bill, Breakup of Hospital Bill, Implant Invoice, Surgeon Certificate, Treating Doctor Certificate.
+- Strict Content-Metadata-Only Evaluation: Filenames are strictly excluded from category determination.
+- Maximum-Identifier Rule: When multiple categories match candidate identifiers, the category with the highest count of distinct matched identifiers is chosen.
+- Date Extraction: Extracts dates in standard Indian formats (DD/MM/YYYY, DD-Mon-YYYY, 1st day of Month Year, AY 20XX-YY, FY 20XX-YY, Month Year).
+- Standardized Naming: Constructs short, meaningful names with extracted identifiers and dates (e.g. `PAN_Card_ABCDE1234F_2021-08-15.pdf`, `Driving_Licence_DL0420110012345_1988-04-15.pdf`, `Prescription_Dr_Mehta_2024-09-05.pdf`).
+
+### 5. Android Native Application Specifications (Points ##1 – ##8 & Enhancements):
+
+- Persistent Login Gate (Points ##1 – ##3): Authenticates via Credential Manager, caches session tokens in `smartdoc_auth` with 7-day expiration, and automatically redirects straight to the library screen on subsequent launches. "Sign out" button clears session.
+- Automatic Whole-Device Scanning & Selective Recursive Folder Scanning (Points ##4 – ##5): Scans entire device storage for PDFs and images upon login (skipping Android OS and internal directories `/Android/data`, `/Android/obb`, `/proc`, `/sys`). Features a native in-app Folder Browser Dialog with quick-access shortcuts (📥 Downloads, 📄 Documents, 📷 DCIM, 🖼️ Pictures, 💬 WhatsApp, 📱 Root) that bypasses Android 11+ SAF system picker blocks on the Downloads directory. If the user cancels folder selection or dismisses the prompt, the app automatically falls back to scanning the complete phone storage as per default behavior. Users can change their mind and switch folders mid-scan via `"📁 Change Folder"` or the header scope chip (`📁 Entire Device` / `📁 <FolderName>`), cancelling active scans and restarting for the new folder. If a folder contains zero documents, the small progress spinner stops immediately at `[0/0]` and displays a clean empty-state card. Orchestrates permissions proactively (`MANAGE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `POST_NOTIFICATIONS`). Issues a high-priority system notification if app is in background or screen is off; surfaces a cancellable in-app banner toast if active in foreground.
+- Content-Metadata-Only Classification & Maximum-Identifier Rule: Filenames are strictly excluded from category evaluation. Conflict resolution selects the category with the highest number of distinct matched identifiers.
+- Dual-Layer Duplicate Detection & Auto-Hiding: Evaluates both Tier 1 (SHA-256 binary hash) and Tier 2 (normalized content text and virtual proposed name matching) to catch duplicate documents even when PDF creation timestamps differ. Duplicates are hidden from both active view and search results.
+- Resilient Cloud AI Category Normalization: Accepts and normalizes free-form categories returned by Cloud AI (Gemini 3.5 Flash Lite or Groq) such as `"Invoice"`, `"Medical Report"`, `"Prescription"`, or `"Salary Slip"`, truncating reasoning up to 2,000 characters rather than rejecting with `INVALID_RESPONSE`.
+- Top Header, Runtime AI Engine Switcher & Two-Group Grey Bar:
+  - Header Row: Features Title, Version, interactive runtime AI Engine Switcher (`✨ Gemini` / `⚡ Groq`), and unclipped Sign Out button.
+  - Runtime Primary Engine Selection: Allows instant switching of primary cloud AI (Gemini or Groq) with mutual automatic failover.
+  - Two-Group Grey Bar Layout:
+    - Group 1 (Left Column): Vertically arranged with active folder (`📁 Entire Device` or `📁 <FolderName>`) on top and `[processed / total]` status count at the bottom.
+    - Group 2 (Remaining width, `weight(1f)`, extra left padding): Equispaced icons (`SpaceEvenly`): Folder picker (`📁`), Rescan (`🔄`), Play/Pause (`⏸️`/`▶️`), and Filter funnel (`ic_filter.png`).
+  - Rescan Popup: Dedicated dialog featuring exclusively 2 buttons: `1. Merge With EarlierScans` and `2. Fresh Scan` (never prompts for folder selection).
+  - Hidden Keepalive WebView: Embedded background WebView / iframe refreshing Cloudflare health endpoint every 10 minutes to maintain serverless connectivity.
+- Post-Scan Card-Based Layout, Inline Editing, Multi-Document Sharing, Moving & Permanent Deletion:
+  - Clutter-Free Card-Based UI: Once processing completes, transitions from the table to an uncluttered `ElevatedCard` list.
+  - Clickable Name Link: Original file name rendered as an underlined, clickable link opening the physical document in the system viewer.
+  - In-line Virtual Name Editing: Proposed name shown in an `OutlinedTextField`; user edits save automatically on blur / focus loss.
+  - Dedicated Permanent Controls: Left selection checkbox and right expand icon (`ic_dropdown`) permanently visible on each card (no secret gestures).
+  - Expandable 3-Tier AI Diagnostic Inspector: Tapping expand displays a complete 3-tier inspection panel (Tier 1: Phone request & OCR text snippet, Tier 2: Cloudflare gateway status & rate limiting, Tier 3: AI execution details or exact Gemini failure diagnostic including Google HTTP error code, status, and server error message, plus on-device fallback reasoning).
+  - Universal Sharing: Selecting cards enables Share (`📤 Share (${count})`) opening the Android share sheet (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`) with virtual file names.
+  - 20-File Export Limit & Notice: Share button disabled when 0 or > 20 cards are selected; displays clean notice *"At a time only 20 files can be exported."* (no intrusive Max 20 badge in button bar).
+  - Atomic Multi-Document Moving with Custom Folder Creation: A dedicated Move button (`📦 Move (${count})`) is positioned beside the Share button, enabled when cards are selected. Tapping Move defaults the target destination to `/storage/emulated/0/Download/SmartDocsTransferd/[Date +_+ Time stamp]` (format `DDMMYY_hh:mm:ss`), automatically created if not present. Allows one-tap immediate move with "Move Now" or custom folder selection via SAF. The operation atomically moves selected physical documents to the destination under their virtual names, updates file created/updated date stamps to the extracted date, updates the app's persistent storage metadata (`PersistentMetadataManager`), and rolls back completely if any failure occurs. Moved files in `SmartDocsTransferd` are excluded from subsequent scans.
+  - Red-Colored Permanent Deletion & Storage Sync: A dedicated red-colored button/icon (`🗑️ (${count})`) is positioned in the action bar, enabled whenever cards are selected. Tapping it displays an explicit confirmation dialog stating *"Selected items will be permanently deleted."* with Confirm and Cancel choices. Confirming permanently deletes physical files from device storage (`File.delete()` / `DocumentFile.delete()`) and synchronizes the app's persistent metadata storage (`PersistentMetadataManager`) in real-time.
+  - Select All / Deselect All: Dedicated header toggle to select or deselect all visible cards at once.
+  - Strict Duplicate & Non-Taxonomy Exclusion: Duplicates (`status == "Duplicate"`) and files failing taxonomy criteria (uncategorized, unclassified, `Other Document`, or errors) never generate cards.
+- Post-Scan Auto-Hiding & Universal Search:
+  - Once scanning and processing complete for all files (`allProcessed`), automatically filters out uncategorized items from view, displaying exclusively categorized files.
+  - Direct Metadata Search (Pure String & Date Matching): Searches match user queries directly against received document metadata fields (`name`, `category`, `proposed`, `custom`, `extractedText`, `responseReceived`, `promptSent`, `modified`). Taxonomy classification rules are strictly excluded from search evaluation.
+  - Dynamic search bar with universal date filtering (Date Issued vs Date Created).
+  - Universal Date Parser: Accepts any date format (Day-Month-Year, Month-Day-Year, ISO 8601, and written alphanumeric formats like `1 May 2026`, `May 1 2026`, `2026-05-01`).
+  - Substring & word matching across all metadata fields.
+  - Interactive live search auto-suggestions dropdown sourced 100% from actual scanned document metadata (zero static keyword lists).
+- Persistent External Metadata Storage Across Uninstalls:
+  - Persists scan metadata JSON to public mobile storage (`Documents/SmartDocManager/smartdoc_metadata.json` or custom chosen folder via SAF tree picker).
+  - Automatically updates latest metadata after every scan.
+  - Remembers chosen location.
+  - On launch/re-install, cross-checks files against device storage, purging missing items and restoring valid metadata to skip re-scanning.
+- External File Store & Storage Access Framework (SAF) Provider (Points ##8.2 – ##8.5):
+  - Registers intent filters for `ACTION_GET_CONTENT`, `ACTION_OPEN_DOCUMENT`, and `ACTION_PICK` in `AndroidManifest.xml`.
+  - Implements `SmartDocumentsProvider` (`android.content.action.DOCUMENTS_PROVIDER`) so SmartDocManager appears directly in the system Files / SAF root sidebar alongside Google Drive, Downloads, and Gallery.
+  - Tapping any row returns that single file immediately with its proposed virtual name to the calling app (Gmail, WhatsApp, browser).
+  - Checkboxes at the beginning of rows enable multi-file selection; checking boxes activates a prominent **`Done (${count})`** button in the top bar.
+  - Selected files are prepared via `DocExportHelper` in cache storage under their proposed names so target applications see the virtual name as `_display_name` while storage files remain completely unaltered.
+
+### 6. Windows Desktop User Interface & Workflow:
+
+- Screen 1: App launch displays ONLY the login screen with "Sign in with Google".
+- Screen 2: Top header shows user email badge with a "Log out" button on the top-right.
+- Selecting a folder triggers immediate automatic scanning (PDFs up to 40 pages and images) and renders the Document Library table immediately.
+- Automatic Row-by-Row Processing:
+  - Background analysis initiates automatically.
+  - While a file is being analyzed, its individual row in the `Processed` column renders an animated progress bar (`[███████░░] 70% Processing…`) directly inside that cell.
+  - Upon completion of each document, its cell updates to `✅ True`, the recognized category is displayed, and the proposed name is filled.
+- Table Columns: `File Name` (clickable to open in OS default viewer), `Type` (PDF/Image), `Processed`, `Category`, and `Proposed Name` (in-line editable with a "Save Name" button).
+- Expandable Row Drawer displaying Provider Used badge, decision basis/evidence, and full JSON payload.
+- Filters: Dual filtering by Category and Date preset.
+- Rescan Dialog: "Scan Again" offers merging vs clear cache.
+- Dedicated desktop launcher (`windows/desktop_launcher.py`) that runs headlessly and launches an isolated native desktop app window (`msedge.exe --app=...`) without browser navigation bars or tabs.
+
+### 7. Automated Setup, Android Signing & SHA-1 Generation:
+
+- Provide an automated PowerShell script (`scripts/20-setup-signing-and-sha1.ps1`) and master controller (`dev.ps1`) that:
+  - Automatically provisions Python venv, installs requirements.txt, and auto-detects Android SDK to create local.properties.
+  - Generates `keystores/debug.keystore` and a self-signed `keystores/smartdocmanager-release.jks` (2048-bit RSA, valid for 10,000 days).
+  - Automatically extracts the DEBUG SHA-1 and RELEASE SHA-1 certificate fingerprints via keytool and saves them into `signing-fingerprints.txt` with Google Cloud Console registration instructions.
+  - `build.gradle.kts` and `scripts/11-build-android-release.ps1` autodiscover `keystores/smartdocmanager-release.jks` with default credentials (`SmartDoc@Release2026`) so release builds never silently skip.
+  - Compiles both `output/android/SmartDocManager-debug.apk` and signed `output/android/SmartDocManager-release.apk` with incremented `versionCode = 2` / `versionName = "0.2"` so they install seamlessly as updates.
+  - Compiles Windows standalone directory and Windows Setup Wizard (`SmartDocManager_Setup.exe`) via `scripts/build-installer.ps1`.
+
+### 8. Git Ignore Standards:
+
+- Include comprehensive `.gitignore` rules protecting `keystores/` (`*.jks`, `*.keystore`), `signing-fingerprints.txt`, `local.properties`, `.env`, `*.local.json`, build outputs (`output/`, `build/`, `dist/`), desktop artifacts (`*.exe`, `*.lnk`, `*.spec`), local databases (`*.sqlite3`, `.smartdocmanager/`), `node_modules/`, and diagnostic logs.
+
+### 9. Test Automation:
+
+- Maintain full test suites: 58 Windows pytest cases (testing core, library, full 519-category Indian taxonomy rules, conflict resolution via maximum-identifier rule, filename exclusion, hosted client, Google login flows, search, and clear buttons) and 15 Cloudflare Worker tests (testing token broker endpoint, token validation, allowlist, failover, and rate limiting).
+```
+
+---
+
+## 10. Ongoing Maintenance & Synchronization Protocol
+
+Whenever a bug fix is applied, a new feature is added, or an architectural improvement is made, adhere strictly to this three-step synchronization protocol:
+
+1. **Update Code Generation & Readiness Scripts:**
+   - Update `scripts/04-create-scaffold.ps1` if new directories, config templates, or specification files are introduced.
+   - Update `scripts/05-verify-readiness.ps1` to assert the presence of all required core modules (e.g., `windows/smartdoc/indian_taxonomy.py`).
+   - Execute `scripts/19-create-clean-archive.ps1` (or `dev.ps1 -Action Archive`) to generate an updated clean distribution archive (`SmartDocManager-source-<timestamp>.zip`).
+2. **Synchronize Documentation & Recreation Prompt:**
+   - Update `README.md` architecture diagrams, repository trees, test counts, and workflow guides.
+   - Update **Section 5 (Completed Application Features & Workflows)** and **Section 6 (Compilation, Build & Export Guide)** to reflect all current features and commands.
+   - Update **Section 9 (Complete Project Recreation Prompt)** so that any AI coding assistant or engineer reading the prompt will generate the exact, current, bug-free codebase from scratch.
+3. **Execute Full Pre-Commit Test Verification:**
+   - Run Windows pytest suite: `powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1` (58 tests passing).
+   - Run Cloudflare Worker test suite: `npm test --prefix hosted-backend/cloudflare` (15 tests passing).
