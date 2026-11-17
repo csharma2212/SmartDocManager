@@ -84,6 +84,8 @@ diagnostics/build-session.log
 
 # --- IDE, Editor & OS Caches ---
 .vscode/
+.vscode
+**/.vscode/
 .agents/
 .gemini/
 .claude/

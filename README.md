@@ -17,7 +17,7 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
   - **Plain Text (`txt`)**: Instantaneous on-device UTF-8 stream reading.
   - **Modern Office XML (`docx`, `xlsx`, `pptx`)**: Direct internal XML text parsing via built-in ZIP stream extraction (`java.util.zip.ZipInputStream` on Android; `zipfile` in Python standard library on Windows)—zero external heavy dependencies or APK bloat.
   - **Legacy Office Binary (`doc`, `xls`, `ppt`)**: Streamlined OLE2 text scraping extracting clean UTF-16LE / ASCII text blocks.
-- Extracted text is classified via Cloud AI (**Google Gemini 3.5 Flash Lite** as default primary API, with **Groq `openai/gpt-oss-20b`** when requested upon Gemini daily quota exhaustion) through the secure Cloudflare Worker proxy (`smartdocmanager-api`).
+- Extracted text is classified via Cloud AI (**Google Gemini 2.0 Flash / 3.5 Flash Lite** as default primary API, with **Groq `llama-3.1-8b-instant`** when requested upon Gemini daily quota exhaustion) through the secure Cloudflare Worker proxy (`smartdocmanager-api`).
 - Local heuristic rule classification fallback is completely eliminated—unprocessed documents remain safely in pending status for subsequent quota reset runs without risk of arbitrary misclassification.
 - Documents are assigned standardized, date-stamped filenames and organized **without ever altering or deleting original files on disk**.
 
@@ -27,27 +27,37 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
   - Seamlessly scans and manages **PDFs** (`.pdf`), **Images** (`.jpg`, `.jpeg`, `.png`, `.webp`), **Office Documents** (`.docx`, `.xlsx`, `.doc`, `.xls`, `.pptx`, `.ppt`), and **Plain Text files** (`.txt`).
   - Text is extracted natively on-device without uploading files. Naming rules and proposed filenames strictly preserve each document's original extension (e.g., `FIN_IncomeTaxForm16_16Nov26.docx`, `FIN_SalaryStmt_16Nov26.xlsx`, `WRK_OfferLetter_16Nov26.txt`).
 - **Privacy & Document Security**: Document files and images **never leave the client machine**. Text recognition (OCR) is performed entirely on-device (native digital text extraction via `pypdfium2` / `PdfRenderer` + local Google ML Kit / Tesseract OCR). Full clean extracted document text (unrestricted, utilizing Gemini's comprehensive context window up to 1,000,000 tokens / 25MB payload capacity) is transmitted to the serverless proxy for AI classification and naming proposal.
-- **Client-Side Rate Limiting & Full Free Tier Quota Utilization**:
-  - **10 Requests per 60 Seconds**: The app enforces a client-side sliding window queue throttle to ensure no more than 10 cloud requests are dispatched per 60 seconds, preventing 429 quota exhaustion.
-  - **Full 1,500 Daily Requests Limit (Gemini Free Tier)**: The app actively tracks daily cloud requests up to the full 1,500 requests per day limit allocated by Google AI Studio (increased from earlier 1,000-request cap).
+- **Client-Side Self-Throttling, Pacing & Free Tier Quota Utilization**:
+  - **15 Requests per 60 Seconds Sliding Window**: The app enforces a client-side sliding window queue throttle to ensure no more than 15 cloud requests are dispatched per 60 seconds, preventing 429 quota exhaustion.
+  - **Full 1,500 Daily Requests Limit (Gemini Free Tier)**: The app actively tracks daily cloud requests up to the full 1,500 requests per day limit allocated by Google AI Studio. Format displayed in UI: `(current_count/1500)`. Gemini dispatches immediately upon completion of the previous request (no artificial delay).
+  - **Groq 2,000 ms Remainder Cycle Pacing & Dynamic Display**: Groq enforces tighter per-minute token and rate limits. If a Groq request finishes in less than 2,000 ms, the app enforces a mandatory pause of the remaining time `(2000 - elapsedMs)` before dispatching the next request. Display format: `(current_count/~1500)` to reflect variable token and request consumption.
 - **Default AI Engine & Interactive Quota Reset Flow**:
-  - **Default API is Always Google Gemini**: Removed option to choose API provider from the UI. The application always uses Google Gemini 3.5 Flash Lite as its default primary classification engine.
+  - **Default API is Always Google Gemini**: The application always uses Google Gemini as its default primary classification engine.
   - **Gemini Quota Exhaustion Prompt**: When the Gemini daily quota is reached or exhausted (HTTP 429 or daily 1,500 ceiling), the application halts cloud requests and displays a modal dialog:
     *"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"* with **Yes** and **No** action buttons.
     - Reset time is computed accurately based on Google AI Studio's daily quota reset at midnight US Pacific Time (00:00 PT), converted to user's local timezone in 24-hour clock format (e.g., `13:30 hours on 18-Nov-2026`).
-  - **Groq Transition & Exact Quota Reset Timing**:
-    - **Reset on Explicit 'Yes'**: The request counter for Groq is reset to 0 (full 1,500 daily requests available) **only when the user taps 'Yes'** on the Gemini quota notice dialog to proceed with Groq.
-    - **Reset on Clock Expiration**: If the user selects 'No' or pauses, the count is **not** reset prematurely. Instead, it resets automatically once the given reset timestamp has passed (e.g. `13:30 hours on 18-Nov-2026` at midnight US Pacific Time), at which point Gemini count is restored to 0 and processing automatically resumes.
-    - When Groq quota is subsequently exhausted (HTTP 429), the application displays:
-      *"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."* with an **OK** button. Reset time is computed based on Groq's daily reset at midnight UTC (00:00 UTC) converted to local time (e.g., `05:30 hours on 18-Nov-2026`).
+  - **Groq Transition & Persistent Quota Tracking**:
+    - **Never Reset by User**: Daily request counts and quota reset clocks are stored in persistent device storage (`smartdoc_rate_limits` SharedPreferences on Android, persistent rate limiter on Windows). Counters **never reset by user action** (such as clicking "Yes", "OK", or "Rescan").
+    - **Session Persistence**: When the app launches in a new session, it restores previously saved counts and active clock times so the user always sees accurate status.
+    - **Groq Pre-Exhaustion Protection on 'Yes'**: When the user clicks "Yes" to proceed with Groq:
+      * If Groq quota is not exhausted: provider switches to Groq, retains its persistent count (e.g., starts at 1 if unused today), and resumes queue processing.
+      * If Groq quota was **already exhausted earlier** and its reset clock has not elapsed: the app **immediately displays the Groq quota notice** (`"Groq quota is completely utilized!..."`) with an **OK** button, keeps the queue paused, and **never resets Groq's count or processes any pending files**.
+    - **Reversion on 'OK'**: On tapping "OK" on the Groq quota dialog, the active provider automatically switches back to **Gemini**, keeping both clocks running independently in the background.
+    - **Clock Expiration & Automatic Restoration**: Quotas reset strictly on official calendar day boundaries (Midnight PT for Gemini, Midnight UTC for Groq). When a clock finishes (either upon app launch or in the background), an alert dialog informs the user that the respective API quota is restored with an **OK** button.
+  - **Same-Folder vs. Different-Folder Rescan Rules**:
+    - If documents are pending and the user taps **"Rescan"** (or selects the **same folder**): already processed document cards are **never removed or cleared** from the list; the quota popup appears every time without clearing completed cards.
+    - If the user selects a **different folder** while the current folder has pending documents: the existing list is cleared and a fresh list is populated for the newly selected directory.
   - **Pending Document Preservation (Zero Heuristic Misclassification)**:
     - If the user selects **No** (or when Groq quota is exhausted), unprocessed documents remain in **pending** status (`status == "pending"` / `processed == "False"`).
-    - There is **no local rule-based heuristic classification** fallback. All file renaming, duplicate removal, and on-device text extraction (OCR) continue as currently designed, but unclassified documents stay safely pending.
-    - The application tracks pending documents and automatically reprocesses them once the quota reset timestamp passes, unless the user starts a fresh scan or files are removed.
+    - There is **no local rule-based heuristic classification** fallback. All file renaming, duplicate removal, and on-device text extraction (OCR) continue as designed, but unclassified documents stay safely pending until quota restoration.
+- **Single-Card Accordion Expansion & Complete Payload Inspection**:
+  - In post-scan card view, **only one card can be expanded at a time**. Expanding another card automatically collapses the previously opened card.
+  - On expanding a card, the view completely and cleanly displays the **full JSON payload sent to Gemini / Groq** and the **complete raw response returned**, eliminating truncation or clutter.
 - **Clarification on Text Recognition vs. AI Models**:
   - **Text Recognition (OCR)** is strictly local: Google ML Kit (Android) or PDFium/Tesseract (Windows).
   - **Neither Gemini nor Groq performs OCR** in standard operation:
-    - **Google Gemini 3.5 Flash Lite** (`gemini-3.5-flash-lite`, with candidate fallback models `gemini-3.1-flash-lite`, `gemini-3.8-flash`, `gemini-3.5-flash`, and `gemini-flash-latest`) offers deep multimodal and text reasoning.
+    - **Google Gemini 2.0 Flash / 3.5 Flash Lite** (`gemini-2.0-flash`, `gemini-3.5-flash-lite`, with candidate fallback models `gemini-3.1-flash-lite`, `gemini-3.8-flash`) offers deep multimodal and text reasoning.
+    - **Groq** (`llama-3.1-8b-instant`, with fallback `llama-3.3-70b-versatile`) offers ultra-fast text-based LLM inference with 20,000 TPM and 14,400 RPD.
     - **Groq** (`openai/gpt-oss-20b`) offers ultra-fast text-based LLM inference.
 - **Zero Exposed AI Credentials**: Clients never store Gemini or Groq API keys. All provider keys live strictly in Cloudflare Worker encrypted secrets.
 - **Google OAuth Gate & Account Allowlist**: Clients authenticate using Google Sign-In (OAuth code + PKCE on Windows, Credential Manager on Android). The Cloudflare Worker verifies Google ID tokens and strictly enforces an email allowlist (`ALLOWED_GOOGLE_EMAILS = "csharma2212@gmail.com,*"`) before granting access to AI quotas.
@@ -100,8 +110,8 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
                                 │          Cloudflare Worker (smartdocmanager-api)       │
                                 │  • Validates Google ID tokens via tokeninfo            │
                                 │  • Enforces ALLOWED_GOOGLE_EMAILS                      │
-                                │  • Per-IP Abuse Limiter: 10 req / 60 sec (CLASSIFY_LIMITER) │
-                                │  • Routes: Gemini 3.5 Flash Lite (Default) & Groq on Switch │
+                                │  • Per-IP Abuse Limiter: 60 req / 60 sec (CLASSIFY_LIMITER) │
+                                │  • Routes: Gemini 2.0 Flash / 3.5 Flash Lite (Default) & Groq llama-3.1-8b-instant on Switch │
                                 └───────────────────────────┬────────────────────────────┘
                                                             │
                               ┌─────────────────────────────┴─────────────────────────────┐
@@ -165,7 +175,7 @@ SmartDocManagerFull/
 │   │   ├── constants.py                    # Centralized configuration & environment loader
 │   │   ├── core.py                         # File validation, types, and constants
 │   │   └── naming.py                       # Helper string sanitation
-│   └── tests/                              # Windows unit test suite (73 passing tests)
+│   └── tests/                              # Windows unit test suite (77 passing tests)
 │
 ├── hosted-backend/                         # Serverless Backend
 │   └── cloudflare/                         # Cloudflare Worker API proxy (smartdocmanager-api)
@@ -309,10 +319,13 @@ This section details the final completed features and end-to-end workflow of the
        - **Rescan / Refresh Icon (`🔄`)**: Opens the 2-button Rescan dialog without asking to select a folder.
        - **Play / Pause (`⏸️`/`▶️`)**: Controls processing queue execution (or displays **`Done (${count})`** in file picker mode).
        - **Interactive Funnel Dropdown (`ic_filter.png`)**: Rightmost filter trigger opening the modal filter menu (`ALL`, `IMAGES`, `PDFs`).
-3. **Rescan Popup (Clean 2-Button Choice)**:
-   - Tapping the Refresh icon (`🔄`) displays a streamlined dialog with strictly 2 prominent action buttons (no folder re-selection prompt):
+3. **Rescan Popup & Folder Scope Retention Rules**:
+   - **Rescan Dialog Modes**: Tapping the Refresh icon (`🔄`) displays a streamlined dialog with strictly 2 prominent action buttons (no folder re-selection prompt):
      1. **`1. Merge With EarlierScans`**: Preserves all previously scanned and categorized documents, detecting and queueing only newly added files to merge into the existing scan data.
      2. **`2. Fresh Scan`**: Wipes previous scan results and classifies all documents from scratch.
+   - **Same-Folder vs. Different-Folder Document Retention**:
+     - **Same Folder or Rescan with Pending Documents**: If documents are pending and the user taps "Rescan" or selects the same folder, already processed document cards are **never removed or cleared** from the list. If the active API quota is utilized, the quota notice dialog appears every time without clearing completed cards so the user can inspect existing files.
+     - **Different Folder Selection**: If the user selects a *different* folder while the current folder has pending documents, the previous list is cleanly cleared and a fresh list is populated for the newly selected target directory.
 4. **Hidden Cloudflare Keepalive WebView (Android & Desktop)**:
    - To prevent Cloudflare connection failures when the browser tab is closed, both the Android Native app and Windows Desktop app embed a hidden webview/iframe connecting to the Cloudflare Worker health endpoint (`https://smartdocmanager-api.csharma2212.workers.dev/health`) with Google login credentials/session cookies.
    - The hidden webview automatically refreshes every 10 minutes while the applications are in use, maintaining an active serverless session seamlessly in the background without affecting the user interface.
@@ -361,24 +374,12 @@ This section details the final completed features and end-to-end workflow of the
 2. **Dedicated Card Controls (Permanently Visible)**:
    - **Left Checkbox**: Dedicated selection checkbox permanently visible on the left side of every card.
    - **Right Expand Icon**: Dedicated expand/collapse icon (`ic_dropdown` / Chevron) permanently visible on the right side of every card (replacing previous secret gesture requirements).
-3. **Expandable 3-Tier AI Diagnostic & Reasoning Panel (Full Request/Response Inspector)**:
-   - Tapping a card's expand icon smoothly expands a comprehensive 3-tier diagnostic inspector panel that surfaces the complete request and response lifecycle across all 3 tiers:
-     - 📱 **Tier 1: Phone Request**:
-       - Endpoint URL and HTTP method (`POST /v1/classify`).
-       - Google OIDC Authentication Token indicator (Bearer token attached & verified).
-       - On-Device OCR Extracted Text length and payload preview snippet.
-     - ☁️ **Tier 2: Cloudflare Backend Gateway**:
-       - Cloudflare Worker HTTP status code (e.g., `200 OK`, `429 Too Many Requests`, `502 Bad Gateway`, `503 Service Not Configured`).
-       - Per-user rate-limiting gate check result (`CLASSIFY_LIMITER`).
-       - AI Provider dispatch routing (`gemini-3.5-flash-lite` primary / failover).
-     - 🤖 **Tier 3: AI Model Execution & Root Cause Failure Diagnostic**:
-       - **When AI Succeeds**: Displays provider model, prompt metadata (`system_instruction`, mode, token usage), raw model candidate JSON, category justification, and proposed name.
-       - **When AI Fails (Exact Root Cause Diagnostic)**: Directly captures and displays why Gemini failed without hiding behind generic error codes:
-         - **Google HTTP Status**: (e.g., `404 Not Found`, `400 Bad Request`, `403 Forbidden`, `429 Resource Exhausted`).
-         - **Google Error Status**: (e.g., `NOT_FOUND`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`).
-         - **Google Exact Error Message**: Google's full server error message (e.g., *"models/gemini-3.5-flash-lite is not found for API version v1beta"*, *"API key expired or invalid"*).
-         - **On-Device Fallback Execution**: Rationale for fallback (`fell back to on-device OCR`), local normalized category assigned, and matched content keywords/identifiers.
-     - Dimensions, raw payload viewer, and document digest.
+3. **Single-Card Accordion Expansion & Complete Payload / Response Inspector**:
+   - **One-at-a-Time Accordion Expansion**: Cards enforce strictly single-card expansion. Expanding any card automatically collapses the previously opened card, eliminating vertical clutter and keeping the document view organized.
+   - **Complete, Untruncated Diagnostic Inspection**:
+     - When expanded, the card displays exclusively and completely the **payload sent to Gemini or Groq** and the **complete raw response returned** by the API.
+     - Both the prompt payload JSON and the received response JSON are fully visible without truncation or clutter, allowing complete inspection of AI classification parameters, token metadata, extracted content, and error diagnostics.
+     - **Exact Root Cause Error Capture**: When an API returns an error or rate limit, the full error details (HTTP status, error codes, and provider messages) are captured directly in the response viewer so the user can diagnose issues without cryptic generic error cards.
 4. **Universal Multi-Document Sharing Sheet Integration**:
    - When one or more cards are selected via checkbox, a prominent **Share** action button is displayed (`📤 Share (${count})`).
    - Tapping Share opens the Android system share sheet (`ACTION_SEND` for a single file, `ACTION_SEND_MULTIPLE` for multiple files) via `DocExportHelper`.
@@ -453,6 +454,29 @@ The Android application functions as an intelligent, system-wide document provid
 - **Unified Modern Application Icon**: High-resolution branded application icon featuring layered document folders with transparent background across Windows executable, setup wizard (`icon.ico`), Streamlit web UI (`icon.png`), and Android mipmap launcher icons (`ic_launcher.png`, `ic_launcher_round.png`).
 - **Consistent Virtual Naming Across Desktop & Android**: Document virtual naming in the Windows Desktop application strictly mirrors Android's deterministic $\le 40$-character convention: `CAT_DocumentNameAbbrev_ddMMMyy.ext` (e.g. `FIN_IncomeTaxForm16_16Nov26.pdf`, `IDN_AadhaarCard_15Aug22.jpg`). User custom overrides take top display precedence, followed by compliant virtual proposed names.
 - **One-Click Desktop Shortcut**: Compiles bytecode and places a one-click launcher icon directly on the Windows Desktop (`SmartDocManager.lnk`).
+
+---
+
+### 5.10 Dual-API Quota Management, Persistent Clocks & Automatic Restoration Flow
+
+1. **Independent Request Tracking & Pacing**:
+   - **Google Gemini**: Tracks requests with exact limit of 1,500 daily requests. Dispatches immediately upon earlier request completion without artificial delays. Displayed in UI as `(current_count/1500)`.
+   - **Groq Cloud**: Tracks requests with token-aware dynamic limit. Dispatches with a mandatory remainder pacing delay of `(2000 - elapsedMs)` to ensure at least 2,000 ms elapsed per request cycle. Displayed in UI as `(current_count/~1500)`.
+2. **Persistent Storage for Counts & Clocks Across Sessions**:
+   - Both request counts and reset clocks are stored persistently in Android SharedPreferences (`smartdoc_rate_limits`) and local client state on Windows.
+   - Upon launching a new session, the app loads previously saved counts and active clock times so users immediately know their quota status and pending scans can resume accurately.
+   - **Counts are Never Reset by User**: User actions (such as clicking "Yes", "OK", "Rescan", or restarting the app) **never** wipe out existing counts. Counts reset strictly when the official reset clock finishes or on calendar day rollover.
+3. **Interactive Quota Exhaustion & Immediate Protection**:
+   - **Gemini Exhaustion**: Displays *"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"* [Yes] [No].
+   - **Groq Transition ('Yes')**:
+     - If Groq quota is available: switches provider to Groq, retains its persistent count, and continues queue processing.
+     - If Groq quota is **already exhausted**: the app **immediately displays the Groq quota notice** with an **OK** button, keeps the queue paused, and **never resets Groq's count or processes any pending files**.
+   - **Groq Exhaustion ('OK')**: Displays *"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."* [OK]. Tapping **OK** switches the active provider back to default **Gemini** with both clocks running in the background.
+4. **Automatic Quota Restored Notifications**:
+   - When a reset clock finishes (either upon app launch or in the background), an alert dialog informs the user that the respective API quota has been restored with an **OK** button:
+     - Both restored: *"Both Google Gemini and Groq quotas have been restored! You can resume processing."*
+     - Gemini restored: *"Google Gemini quota has been restored! Daily limit is reset to 1500 requests."*
+     - Groq restored: *"Groq quota has been restored! Limit has been reset."*
 
 ---
 
@@ -542,14 +566,17 @@ powershell -ExecutionPolicy Bypass -File dev.ps1 -Action BuildInstaller
 
 ### 6.5 Running Full Test Verification Suites
 
-Verifies all 73 Windows tests and 23 Cloudflare Worker tests:
+Verifies all 77 Windows tests, 23 Cloudflare Worker tests, and 16 Android unit tests:
 
 ```powershell
-# Run 73 Windows unit tests:
+# Run 77 Windows unit tests:
 powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1
 
 # Run 23 Cloudflare Worker tests:
 npm test --prefix hosted-backend/cloudflare
+
+# Run 16 Android unit tests:
+cd android; .\gradlew.bat testDebugUnitTest
 ```
 
 ---
@@ -583,8 +610,8 @@ Under **Workers & Pages → smartdocmanager-api → Settings → Variables and S
 | `GOOGLE_DESKTOP_CLIENT_ID`     | Plaintext             | `492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com`                                                                          |
 | `ALLOWED_GOOGLE_EMAILS`        | Plaintext             | `csharma2212@gmail.com,*`                                                                                                                           |
 | `ALLOW_LEGACY_TOKEN`           | Plaintext             | `true`                                                                                                                                              |
-| `GEMINI_MODEL`                 | Plaintext             | Default: `gemini-3.5-flash-lite`                                                                                                                    |
-| `GROQ_MODEL`                   | Plaintext             | Default: `openai/gpt-oss-20b`                                                                                                                       |
+| `GEMINI_MODEL`                 | Plaintext             | Default: `gemini-2.0-flash` (with `gemini-3.5-flash-lite` fallback)                                                                                 |
+| `GROQ_MODEL`                   | Plaintext             | Default: `llama-3.1-8b-instant` (with `llama-3.3-70b-versatile` fallback)                                                                           |
 | `USE_GROQ_ONLY`                | Plaintext             | Default: `false` (When true, routes requests directly to Groq, bypassing Gemini)                                                                   |
 
 ### 7.3 Cloudflare Abuse Rate Limiter (`CLASSIFY_LIMITER`)
@@ -596,23 +623,34 @@ In `wrangler.toml`, rate limiting is enforced per IP/principal:
 name = "CLASSIFY_LIMITER"
 type = "ratelimit"
 namespace_id = "1001"
-simple = { limit = 10, period = 60 }
+simple = { limit = 60, period = 60 }
 ```
 
 ### 7.4 Free API Tier Limits, Client Pacing & Interactive Quota Dialogs
 
-- **Google Gemini 3.5 Flash Lite**: **15 RPM**, **1,000,000 TPM**, **1,500 RPD** (Free Tier). The application fully utilizes the complete 1,500 requests per day limit.
-- **Groq Cloud**: **30 RPM**, **7,000 RPD** (Free Tier). Serves as secondary fallback upon user consent when Gemini daily quota is exhausted.
-- **Client-Side Self-Throttling**: The app strictly enforces a maximum dispatch rate of **10 requests per 60 seconds** on the client side, preventing 429 burst limit rejections.
-- **Gemini Quota Exhaustion Dialog (Yes / No)**:
-  - When Gemini quota is exhausted (HTTP 429 or 1,500 requests reached), the app halts queue processing and displays:
-    `"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"` with **Yes** and **No** buttons.
-  - Reset time is dynamically computed based on Gemini's daily quota reset at Midnight US Pacific Time (00:00 PT), formatted in local 24-hour clock time (e.g. `13:30 hours on 18-Nov-2026`).
-- **Groq Quota Exhaustion Dialog (OK)**:
-  - If the user selects **Yes**, processing continues using the Groq API up to its daily limit.
-  - When Groq daily quota is exhausted (HTTP 429), the app displays:
-    `"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."` with an **OK** button.
-  - Reset time is dynamically computed based on Groq's daily reset at Midnight UTC (00:00 UTC), formatted in local 24-hour clock time (e.g. `05:30 hours on 18-Nov-2026`).
+- **Google Gemini 2.0 Flash / 3.5 Flash Lite**: **15 RPM**, **1,000,000 TPM**, **1,500 RPD** (Free Tier).
+  - The application fully utilizes the complete 1,500 requests per day limit.
+  - Gemini dispatches requests immediately upon completion of the previous request (no artificial delay).
+  - Display format: `(current_count/1500)`.
+- **Groq Cloud (`llama-3.1-8b-instant`)**: **30 RPM**, **20,000 TPM**, **14,400 RPD** (Free Tier).
+  - Prioritized to avoid tight 6,000 TPM limits on larger models.
+  - **Mandatory Remainder Pacing**: Groq enforces a minimum 2,000 ms (2-second) cycle. If a request finishes in less than 2,000 ms, the client pauses for the remainder `(2000 - elapsedMs)` before sending the next file.
+  - Display format: `(current_count/~1500)` reflecting token-dependent limits.
+- **Client-Side Self-Throttling**: The app enforces a sliding window limiter of **15 requests per 60 seconds** on the client side, avoiding burst 429 rejections.
+- **Persistent Quota Tracking Across Sessions**:
+  - Request counters and quota reset timestamps are stored in persistent device storage (`smartdoc_rate_limits` SharedPreferences on Android, client rate limiter on Windows).
+  - Counters **never reset by user actions** (tapping "Yes", "OK", "Rescan", or restarting the app). Counts reset strictly when the official reset clock finishes or on calendar day rollover.
+  - On launch in a new session, the app loads previously saved counts and active clock times so users immediately know their quota status and pending scans can resume accurately.
+- **Interactive Quota Exhaustion Dialogs**:
+  - **Gemini Exhaustion**: Halts queue and displays:
+    `"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"` with **Yes** and **No** buttons (reset at Midnight PT, 00:00 PT).
+  - **Groq Transition ('Yes') & Immediate Protection**:
+    - If Groq quota is available: switches provider to Groq, retains its persistent count, and unpauses queue.
+    - If Groq quota is **already exhausted**: the app **immediately displays the Groq quota notice** with an **OK** button, keeps the queue paused, and **never resets Groq's count or processes any pending files**.
+  - **Groq Exhaustion ('OK')**: Displays:
+    `"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."` with an **OK** button (reset at Midnight UTC, 00:00 UTC). Tapping **OK** switches the active provider back to default **Gemini** with both clocks running in the background.
+- **Automatic Quota Restored Notifications**:
+  - When either Gemini or Groq reset clock finishes (on app launch or in the background), an alert dialog informs the user that the respective API quota is restored with an **OK** button.
 - **Safe Pending Document Preservation**:
   - If the user selects **No** (or when Groq quota is exhausted), unprocessed documents remain in **pending** status (`status == "pending"` / `processed == "False"`).
   - There is **no local rule-based heuristic classification** fallback. All file renaming, duplicate relocation to `Download/Duplicates/`, and on-device text extraction (OCR) remain active.
@@ -696,18 +734,23 @@ Recreate the complete, production-ready "SmartDocManager" project: a cross-platf
   - Android: Native `PdfRenderer` (up to 40 pages) + Google ML Kit Text Recognition (`com.google.mlkit:text-recognition:16.0.1`).
   - Windows: Native `pypdfium2` textpages + local Tesseract OCR fallback.
 - Full extracted text (unrestricted, removing the prior 16,000 character limit to leverage Gemini's context window) is transmitted to the secure Cloudflare Worker serverless proxy (`smartdocmanager-api`) for AI classification and naming proposal.
-- Client-Side Rate Limiter & Daily Free Quotas:
-  - Client-side queue pacing guarantees no more than 10 cloud requests per 60 seconds are dispatched.
-  - The application utilizes the full 1,500 requests per day limit for Google Gemini 3.5 Flash Lite (no 1,000 cap).
+- Client-Side Rate Limiter & Dual-API Free Quotas:
+  - Client-side queue pacing guarantees no more than 15 cloud requests per 60 seconds are dispatched across a sliding window.
+  - Gemini: Full 1,500 daily requests utilized. No artificial wait; dispatches immediately upon earlier request completion. Display format: `(current_count/1500)`.
+  - Groq (`llama-3.1-8b-instant`): Mandatory 2,000 ms remainder cycle pacing `(2000 - elapsedMs)` before dispatching next request. Display format: `(current_count/~1500)`.
   - Default API is always Google Gemini. Manual engine selection is removed from the UI.
-- Quota Exhaustion & Interactive Switch Workflow:
-  - When Gemini quota is exhausted (HTTP 429), client halts and displays:
-    `"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"` with Yes and No buttons.
-    Reset time is calculated based on Midnight US Pacific Time (00:00 PT) in local 24-hour clock time (e.g. `13:30 hours on 18-Nov-2026`).
-  - If user selects Yes, processing proceeds using Groq (`openai/gpt-oss-20b`) utilizing its daily quota.
+- Quota Exhaustion, Persistent Clocks & Interactive Switch Workflow:
+  - Counters and reset timestamps are stored in persistent storage across sessions (`smartdoc_rate_limits` SharedPreferences on Android, client limiter on Windows). Counters are **never reset by user action**.
+  - When Gemini quota is exhausted (HTTP 429 or 1,500 reached), client halts and displays:
+    `"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"` with Yes and No buttons (reset at Midnight PT, 00:00 PT).
+  - When user selects Yes:
+    - If Groq quota is not exhausted, processing proceeds using Groq with its persistent count.
+    - If Groq quota is **already exhausted**, client **immediately displays the Groq quota notice** with an OK button, keeps queue paused, and **never resets Groq's count or processes any pending files**.
   - When Groq quota is exhausted (HTTP 429), client displays:
-    `"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."` with OK button.
-    Reset time is calculated based on Midnight UTC (00:00 UTC) in local 24-hour clock time (e.g. `05:30 hours on 18-Nov-2026`).
+    `"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."` with OK button (reset at Midnight UTC, 00:00 UTC). Tapping OK automatically switches active provider back to default **Gemini** with both clocks running in the background.
+  - Automatic Quota Restored Notifications: An alert dialog notifies the user the moment a reset clock expires (on app launch or in the background) with an OK button.
+  - Same-Folder vs. Different-Folder Rescan: If documents are pending and user rescans or selects the same folder, already processed cards are never removed or cleared. If a different folder is selected, the list clears and populates for the new folder.
+  - Single-Card Accordion Expansion: Only one card can be expanded at a time; expanding another card collapses the earlier one. Expanded view cleanly and completely displays the sent payload and received raw response without truncation.
   - No Local Rule Fallback: Unprocessed documents remain in pending status (`status == "pending"` / `processed == "False"`). Local rule classification fallback is eliminated. The application keeps track of pending documents and auto-resumes once the quota reset timestamp passes.
 - Zero AI API keys are exposed to clients; all provider keys live in Cloudflare Worker encrypted secrets.
 
@@ -821,7 +864,7 @@ Recreate the complete, production-ready "SmartDocManager" project: a cross-platf
 
 ### 9. Test Automation:
 
-- Maintain full test suites: 73 Windows pytest cases (testing core, library, full 519-category Indian taxonomy rules, conflict resolution via maximum-identifier rule, filename exclusion, hosted client, Google login flows, search, and clear buttons) and 23 Cloudflare Worker tests (testing token broker endpoint, token validation, allowlist, failover, 429 strict handling, and rate limiting).
+- Maintain full test suites: 77 Windows pytest cases (testing core, library, async queue, rate limiter quota exhaustion tracking, full 519-category Indian taxonomy rules, conflict resolution via maximum-identifier rule, filename exclusion, hosted client, Google login flows, search, and clear buttons), 23 Cloudflare Worker tests (testing token broker endpoint, token validation, allowlist, failover, 429 strict handling, and rate limiting), and 16 Android unit tests (testing classifier, taxonomy, rate limiter constants, reset calculations, and office text extraction).
 ```
 
 ---
@@ -839,5 +882,6 @@ Whenever a bug fix is applied, a new feature is added, or an architectural impro
    - Update **Section 5 (Completed Application Features & Workflows)** and **Section 6 (Compilation, Build & Export Guide)** to reflect all current features and commands.
    - Update **Section 9 (Complete Project Recreation Prompt)** so that any AI coding assistant or engineer reading the prompt will generate the exact, current, bug-free codebase from scratch.
 3. **Execute Full Pre-Commit Test Verification:**
-   - Run Windows pytest suite: `powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1` (73 tests passing).
+   - Run Windows pytest suite: `powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1` (77 tests passing).
    - Run Cloudflare Worker test suite: `npm test --prefix hosted-backend/cloudflare` (23 tests passing).
+   - Run Android unit tests: `cd android; .\gradlew.bat testDebugUnitTest` (16 tests passing).
