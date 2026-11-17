@@ -3,9 +3,9 @@ main = "src/worker.mjs"
 compatibility_date = "2025-06-01"
 
 [vars]
-GEMINI_MODEL = "gemini-3.5-flash-lite"
-GROQ_MODEL = "openai/gpt-oss-20b"
-USE_GROQ_ONLY = "true"
+GEMINI_MODEL = "gemini-2.0-flash"
+GROQ_MODEL = "llama-3.1-8b-instant"
+USE_GROQ_ONLY = "false"
 GOOGLE_CLIENT_IDS = "492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com,492541392963-b0mf650fohoas9m6a24fa32enrstjrr6.apps.googleusercontent.com"
 GOOGLE_DESKTOP_CLIENT_ID = "492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com"
 ALLOWED_GOOGLE_EMAILS = "csharma2212@gmail.com,*"
@@ -16,4 +16,4 @@ ALLOW_LEGACY_TOKEN = "true"
 name = "CLASSIFY_LIMITER"
 type = "ratelimit"
 namespace_id = "1001"
-simple = { limit = 10, period = 60 }
+simple = { limit = 60, period = 60 }

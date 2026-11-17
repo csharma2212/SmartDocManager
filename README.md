@@ -17,7 +17,8 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
   - **Plain Text (`txt`)**: Instantaneous on-device UTF-8 stream reading.
   - **Modern Office XML (`docx`, `xlsx`, `pptx`)**: Direct internal XML text parsing via built-in ZIP stream extraction (`java.util.zip.ZipInputStream` on Android; `zipfile` in Python standard library on Windows)—zero external heavy dependencies or APK bloat.
   - **Legacy Office Binary (`doc`, `xls`, `ppt`)**: Streamlined OLE2 text scraping extracting clean UTF-16LE / ASCII text blocks.
-- Extracted text is evaluated against an offline **Local Indian Document Standards engine** or classified via Cloud AI (**Google Gemini 3.5 Flash Lite** with **Groq `openai/gpt-oss-20b` failover**) through the secure Cloudflare Worker proxy (`smartdocmanager-api`).
+- Extracted text is classified via Cloud AI (**Google Gemini 3.5 Flash Lite** as default primary API, with **Groq `openai/gpt-oss-20b`** when requested upon Gemini daily quota exhaustion) through the secure Cloudflare Worker proxy (`smartdocmanager-api`).
+- Local heuristic rule classification fallback is completely eliminated—unprocessed documents remain safely in pending status for subsequent quota reset runs without risk of arbitrary misclassification.
 - Documents are assigned standardized, date-stamped filenames and organized **without ever altering or deleting original files on disk**.
 
 ### Core Architectural Principles
@@ -26,20 +27,28 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
   - Seamlessly scans and manages **PDFs** (`.pdf`), **Images** (`.jpg`, `.jpeg`, `.png`, `.webp`), **Office Documents** (`.docx`, `.xlsx`, `.doc`, `.xls`, `.pptx`, `.ppt`), and **Plain Text files** (`.txt`).
   - Text is extracted natively on-device without uploading files. Naming rules and proposed filenames strictly preserve each document's original extension (e.g., `FIN_IncomeTaxForm16_16Nov26.docx`, `FIN_SalaryStmt_16Nov26.xlsx`, `WRK_OfferLetter_16Nov26.txt`).
 - **Privacy & Document Security**: Document files and images **never leave the client machine**. Text recognition (OCR) is performed entirely on-device (native digital text extraction via `pypdfium2` / `PdfRenderer` + local Google ML Kit / Tesseract OCR). Full clean extracted document text (unrestricted, utilizing Gemini's comprehensive context window up to 1,000,000 tokens / 25MB payload capacity) is transmitted to the serverless proxy for AI classification and naming proposal.
-- **Client-Side Rate Limiting & Daily Cloud Quota Safeguard**:
+- **Client-Side Rate Limiting & Full Free Tier Quota Utilization**:
   - **10 Requests per 60 Seconds**: The app enforces a client-side sliding window queue throttle to ensure no more than 10 cloud requests are dispatched per 60 seconds, preventing 429 quota exhaustion.
-  - **1,000 Requests Daily Limit**: The app actively tracks daily cloud requests (up to 1,000 requests per 24 hours). Once the 1,000-request daily ceiling is reached, cloud classification is paused, documents gracefully fall back to the on-device Local Indian Taxonomy Engine, and the user is explicitly alerted: *"1000 request per day limit is reached. To process further continue after 24 hours."*
-- **Clarification on Text Recognition vs. AI Models & Runtime Choice**:
+  - **Full 1,500 Daily Requests Limit (Gemini Free Tier)**: The app actively tracks daily cloud requests up to the full 1,500 requests per day limit allocated by Google AI Studio (increased from earlier 1,000-request cap).
+- **Default AI Engine & Interactive Quota Reset Flow**:
+  - **Default API is Always Google Gemini**: Removed option to choose API provider from the UI. The application always uses Google Gemini 3.5 Flash Lite as its default primary classification engine.
+  - **Gemini Quota Exhaustion Prompt**: When the Gemini daily quota is reached or exhausted (HTTP 429 or daily 1,500 ceiling), the application halts cloud requests and displays a modal dialog:
+    *"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"* with **Yes** and **No** action buttons.
+    - Reset time is computed accurately based on Google AI Studio's daily quota reset at midnight US Pacific Time (00:00 PT), converted to user's local timezone in 24-hour clock format (e.g., `13:30 hours on 18-Nov-2026`).
+  - **Groq Transition & Exact Quota Reset Timing**:
+    - **Reset on Explicit 'Yes'**: The request counter for Groq is reset to 0 (full 1,500 daily requests available) **only when the user taps 'Yes'** on the Gemini quota notice dialog to proceed with Groq.
+    - **Reset on Clock Expiration**: If the user selects 'No' or pauses, the count is **not** reset prematurely. Instead, it resets automatically once the given reset timestamp has passed (e.g. `13:30 hours on 18-Nov-2026` at midnight US Pacific Time), at which point Gemini count is restored to 0 and processing automatically resumes.
+    - When Groq quota is subsequently exhausted (HTTP 429), the application displays:
+      *"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."* with an **OK** button. Reset time is computed based on Groq's daily reset at midnight UTC (00:00 UTC) converted to local time (e.g., `05:30 hours on 18-Nov-2026`).
+  - **Pending Document Preservation (Zero Heuristic Misclassification)**:
+    - If the user selects **No** (or when Groq quota is exhausted), unprocessed documents remain in **pending** status (`status == "pending"` / `processed == "False"`).
+    - There is **no local rule-based heuristic classification** fallback. All file renaming, duplicate removal, and on-device text extraction (OCR) continue as currently designed, but unclassified documents stay safely pending.
+    - The application tracks pending documents and automatically reprocesses them once the quota reset timestamp passes, unless the user starts a fresh scan or files are removed.
+- **Clarification on Text Recognition vs. AI Models**:
   - **Text Recognition (OCR)** is strictly local: Google ML Kit (Android) or PDFium/Tesseract (Windows).
   - **Neither Gemini nor Groq performs OCR** in standard operation:
     - **Google Gemini 3.5 Flash Lite** (`gemini-3.5-flash-lite`, with candidate fallback models `gemini-3.1-flash-lite`, `gemini-3.8-flash`, `gemini-3.5-flash`, and `gemini-flash-latest`) offers deep multimodal and text reasoning.
     - **Groq** (`openai/gpt-oss-20b`) offers ultra-fast text-based LLM inference.
-  - **Runtime Choice of Primary AI Engine (Gemini vs. Groq)**:
-    - Users can select at runtime whether to process documents via **Gemini** or **Groq**.
-    - Based on the user's choice, the selected engine becomes the **primary API** for document classification:
-      - If **Gemini** is selected as primary, Gemini processes requests first; if its quota is reached (HTTP 429), it automatically fails over to Groq.
-      - If **Groq** is selected as primary, Groq processes requests first; if its quota is reached or unavailable, it automatically fails over to Gemini.
-      - If both cloud AI providers are unavailable, processing gracefully falls back to the on-device Local Indian Taxonomy Engine.
 - **Zero Exposed AI Credentials**: Clients never store Gemini or Groq API keys. All provider keys live strictly in Cloudflare Worker encrypted secrets.
 - **Google OAuth Gate & Account Allowlist**: Clients authenticate using Google Sign-In (OAuth code + PKCE on Windows, Credential Manager on Android). The Cloudflare Worker verifies Google ID tokens and strictly enforces an email allowlist (`ALLOWED_GOOGLE_EMAILS = "csharma2212@gmail.com,*"`) before granting access to AI quotas.
 - **Content-Metadata-Only Classification**: Filenames are strictly excluded from category determination so prior inaccurate user renames never cause misclassification.
@@ -48,11 +57,11 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
 - **Rich Document Metadata Extraction & Comprehensive Entity Search**: The backend AI models (Gemini & Groq) extract structured metadata per document, including Title, Issuer/Organization, Doctor Name, Patient Name, Hospital/Clinic, Lab Name, Test Name, Lessee Name, Lessor Name, Issued Date, Amount, and Document Identifiers. This metadata is saved persistently per file (in `smartdoc_metadata.json` on Android and SQLite on Windows) and enables instant search filtering and live suggestions across any entity field.
 - **Universal Date Matching & Live Suggestions**: Flexible date parser supports any date format (Day-Month-Year, Month-Day-Year, ISO 8601, and alphanumeric written formats) for issued and created dates, accompanied by live search auto-suggestions.
 - **Non-Destructive Management & Safe Duplicate Relocation**: Original unique files on disk remain completely unmodified unless explicitly moved or permanently deleted by the user. Upon scan completion, detected physical duplicate files (`status == "Duplicate"`) are automatically relocated to a safe review directory at `Download/Duplicates/` (created automatically if missing) to declutter primary folders.
-- **Pre-Backend Quota Optimization (Upfront Duplicate Relocation & No-Text Dropping)**: To aggressively preserve the 10 req/60 sec sliding window and 1,000 req/day daily quota, the application screens all documents *before* dispatching any request to the Cloud AI backend:
+- **Pre-Backend Quota Optimization (Upfront Duplicate Relocation & No-Text Dropping)**: To aggressively preserve the 10 req/60 sec sliding window and daily free quota, the application screens all documents *before* dispatching any request to the Cloud AI backend:
   - **Upfront Duplicate Relocation**: Binary SHA-256 and content/text duplicates are identified locally and immediately moved to `Download/Duplicates/` without making any cloud API requests.
   - **No-Text Document Dropping**: Documents lacking valid textual content (e.g. blank scans, empty images, or unreadable noise with `< 5` alphanumeric characters) are dropped locally on-device (`UNCATEGORIZABLE` / `FALLBACK`) without making any backend API requests.
   - **Result**: Zero backend calls are wasted on duplicate or textless files; only unique documents with valid textual content consume AI quota.
-- **Free-Tier Sustainability & Automated Fallback**: Supports runtime primary engine selection between Google Gemini 3.5 Flash Lite and Groq (`openai/gpt-oss-20b`), with automatic bidirectional failover to the secondary engine. If Cloud AI credentials are unconfigured or unavailable, the system automatically falls back to the **Local Indian Taxonomy Engine** so document processing continues without disruption. If both free tiers are exhausted, halts gracefully and notifies the user.
+- **Quota Safeguard & Interactive Free-Tier Transition**: Default API is always Google Gemini 3.5 Flash Lite up to its full 1,500 daily requests. When exhausted, the user is prompted to switch to Groq (`openai/gpt-oss-20b`), which provides additional daily capacity. Unprocessed documents remain safely in pending state without arbitrary local heuristic classification, and automatically resume once the quota reset timestamp has passed.
 - **Strict 40-Character Maximum Standardized File Naming Convention**:
   - Filenames are constructed deterministically (not generated by LLM token guessing) and strictly adhere to an absolute maximum limit of **40 characters** (including extension).
   - **Nomenclature Structure**: `CAT_DocumentNameAbbrev_ddMMMyy.ext` (e.g. `FIN_IncomeTaxForm16_15Nov26.pdf`).
@@ -92,7 +101,7 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
                                 │  • Validates Google ID tokens via tokeninfo            │
                                 │  • Enforces ALLOWED_GOOGLE_EMAILS                      │
                                 │  • Per-IP Abuse Limiter: 10 req / 60 sec (CLASSIFY_LIMITER) │
-                                │  • Routes: Gemini 3.5 Flash Lite <──> Groq (Bidirectional Fallover) │
+                                │  • Routes: Gemini 3.5 Flash Lite (Default) & Groq on Switch │
                                 └───────────────────────────┬────────────────────────────┘
                                                             │
                               ┌─────────────────────────────┴─────────────────────────────┐
@@ -102,7 +111,7 @@ _Android Native (Kotlin & Jetpack Compose) · Windows Desktop (Python & Streamli
 │  • UI: Kotlin + Jetpack Compose (Material3)            │  │  • UI: Dedicated Desktop Window (App Mode / Streamlit) │
 │  • Auth: Android Credential Manager (7-day cache)      │  │  • Auth: Google Desktop OAuth + PKCE (127.0.0.1)       │
 │  • OCR Engine: Native PdfRenderer + ML Kit (On-Device) │  │  • OCR: PyPdfium2 Native Text + OCR Fallback           │
-│  • Storage: Auto Whole-Device Scan (MANAGE_EXT_STORAGE)│  │  • Taxonomy: Local Indian rule & date extraction       │
+│  • Storage: Auto Whole-Device Scan (MANAGE_EXT_STORAGE)│  │  • Queue: Gemini Primary / Groq on Switch / Pending   │
 │  • Persistent Metadata: External JSON across uninstalls│  │  • Storage: Local SQLite (~/.smartdocmanager/)         │
 │  • File Store: SAF DocumentsProvider (Gmail, WhatsApp) │  │  • Safety: Virtual renames & duplicate hiding          │
 │  • Safety: Virtual renames & duplicate hiding          │  │                                                        │
@@ -156,12 +165,12 @@ SmartDocManagerFull/
 │   │   ├── constants.py                    # Centralized configuration & environment loader
 │   │   ├── core.py                         # File validation, types, and constants
 │   │   └── naming.py                       # Helper string sanitation
-│   └── tests/                              # Windows unit test suite (58 passing tests)
+│   └── tests/                              # Windows unit test suite (73 passing tests)
 │
 ├── hosted-backend/                         # Serverless Backend
 │   └── cloudflare/                         # Cloudflare Worker API proxy (smartdocmanager-api)
 │       ├── src/worker.mjs                  # Gemini/Groq proxy, token broker, token validation, limiter
-│       ├── test/                           # Worker unit tests (15 passing tests)
+│       ├── test/                           # Worker unit tests (23 passing tests)
 │       ├── package.json                    # Node.js dependencies
 │       └── wrangler.toml                   # Cloudflare Worker deployment configuration
 │
@@ -239,11 +248,15 @@ For Windows Desktop, Google requires a Client Secret to exchange authorization c
 
 This section details the final completed features and end-to-end workflow of the application, structured in natural chronological progression:
 
-### 5.1 Persistent Authentication & 7-Day Session Management (Points ##1 – ##3)
+### 5.1 Real OIDC Session Lifetime & Seamless Re-Authentication Flow
 
-1. **7-Day Session Persistence (Point ##1)**: User credentials and tokens are cached securely in `smartdoc_auth` SharedPreferences with a 7-day expiration timestamp.
-2. **Direct Seamless App Launch (Point ##2)**: On subsequent launches, if valid session information is available, the app immediately bypasses the login screen and transitions straight to the main document library.
-3. **Dedicated Sign Out (Point ##3)**: A dedicated "Sign out" button in the top bar clears cached tokens and returns the user to the login gate.
+1. **Exact JWT Expiration Tracking**: Rather than relying on a hardcoded 7-day offset, the client parses the real `exp` (expiration timestamp) claim directly from the Google ID Token JWT. Google OIDC tokens strictly expire in 1 hour (3,600 seconds).
+2. **Pre-Request Expiration Shield**: Before dispatching any network request to the Cloudflare Worker backend, the app verifies token validity with a 60-second safety buffer. If expired or missing, requests are safely held.
+3. **Queue Auto-Pause on 401 Unauthorized**: If an authorization error occurs (`401 Unauthorized`, `TOKEN_EXPIRED`, or `AUDIENCE_MISMATCH`), the background processing loop immediately pauses (`isQueuePaused = true`) rather than continuing to hammer the server and marking remaining documents with yellow triangle `Error` cards.
+4. **Interactive 1-Tap Re-Authentication Dialog**: When session expiration or a 401 response occurs, an interactive modal dialog appears: *"Your Google Sign-In session has expired or requires renewal. Please sign in again to continue document classification."* Tapping **"Sign in with Google"** instantly invokes Google Credential Manager to obtain a fresh token and resumes the processing queue.
+5. **Automatic Pending Re-Queuing**: Upon successful re-authentication, any documents that previously faced authentication errors are automatically restored to `Pending Analysis` status and processed with the fresh token.
+6. **Multi-Audience Cloudflare Worker Verification**: The backend proxy evaluates `allowedClientIds` by combining all configured client IDs (`GOOGLE_CLIENT_IDS`, `GOOGLE_DESKTOP_CLIENT_ID`, `GOOGLE_WEB_CLIENT_ID`, and defaults), ensuring Android and Desktop client tokens are authenticated without audience mismatch rejections.
+7. **Dedicated Sign Out**: A dedicated "Sign out" button in the top bar clears cached tokens and returns the user to the login gate.
 
 ---
 
@@ -276,16 +289,16 @@ This section details the final completed features and end-to-end workflow of the
    - **Automatic Physical Duplicate Relocation (`Download/Duplicates/`)**: Both upon initial scan and throughout queue processing, all detected physical duplicate files (`status == "Duplicate"`) are automatically moved to public storage at `Download/Duplicates/` (created automatically if it does not already exist on disk), decluttering the user's primary document folders while preserving duplicate files safely in a dedicated review directory.
    - **Clean UI Auto-Hiding**: Secondary duplicates are marked with `status = "Duplicate"` and non-textual files with `proposed = "N/A"`, automatically hiding them from active library cards and search views.
    - **Continuous Deduplication**: Runs both after scan discovery, upon metadata restoration, and at queue completion so duplicates are never exposed in search results.
-5. **Resilient Cloud AI Category Normalization**: When Cloud AI (Gemini 3.5 Flash Lite or Groq) classifies documents and returns valid descriptive categories (such as `"Invoice"`, `"Medical Report"`, `"Prescription"`, or `"Salary Slip"`), the client normalizes them to canonical standards or accepts them directly, truncating reasoning up to 2,000 characters rather than throwing an `INVALID_RESPONSE` error. True network/quota errors (HTTP 429, 502) are clearly distinguished from schema validation.
+5. **Resilient Cloud AI Category Normalization**: When Cloud AI (Gemini 3.5 Flash Lite or Groq) classifies documents and returns valid descriptive categories (such as `"Invoice"`, `"Medical Report"`, `"Prescription"`, or `"Salary Slip"`), the client normalizes them to canonical standards or accepts them directly, truncating reasoning up to 2,000 characters rather than throwing an `INVALID_RESPONSE` error. True network/quota errors (HTTP 429, 502) are clearly distinguished from schema validation and trigger the interactive quota exhaustion flow.
 
 ---
 
 ### 5.4 Two-Group Grey Bar, Top Header Visibility, Rescan Dialog & Hidden Keepalive WebView
 
-1. **Top Header, Runtime AI Engine Switcher & Sign Out Visibility**:
-   - The top header row contains the application title, an interactive runtime AI Engine Switcher pill (`✨ Gemini` / `⚡ Groq`), and a fully visible, unclipped **"Sign out"** button.
-   - **Runtime AI Engine Selection**: Tapping the switcher pill toggles between **Google Gemini 3.5 Flash Lite** and **Groq (`openai/gpt-oss-20b`)** on the fly. Whichever provider the user selects becomes the **primary API** for all processing requests (with the other provider serving as automatic failover).
-   - The active folder display is relocated into the grey bar below, ensuring that the title, provider switcher, and Sign out button always appear fully on screen without truncation across all device widths.
+1. **Top Header & Default Primary Provider Indicator**:
+   - The top header row contains the application title, a clean informative provider badge (`✨ Gemini`), and a fully visible, unclipped **"Sign out"** button.
+   - **Default Primary API (No UI Selector)**: The manual engine toggle has been removed from the user interface. Google Gemini 3.5 Flash Lite is permanently the default primary engine. When Gemini's full daily quota of 1,500 requests is exhausted (HTTP 429), the application prompts the user with calculated reset times whether to proceed with Groq.
+   - The active folder display is relocated into the grey bar below, ensuring that the title, provider badge, and Sign out button always appear fully on screen without truncation across all device widths.
 2. **Two-Group Grey Bar Structure**:
    - The grey bar (horizontal controls card) is cleanly divided into two functional groups:
      - **Group 1 (Left-Aligned Status Column)**: Arranged vertically:
@@ -529,13 +542,13 @@ powershell -ExecutionPolicy Bypass -File dev.ps1 -Action BuildInstaller
 
 ### 6.5 Running Full Test Verification Suites
 
-Verifies all 58 Windows tests and 15 Cloudflare Worker tests:
+Verifies all 73 Windows tests and 23 Cloudflare Worker tests:
 
 ```powershell
-# Run 58 Windows unit tests:
+# Run 73 Windows unit tests:
 powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1
 
-# Run 15 Cloudflare Worker tests:
+# Run 23 Cloudflare Worker tests:
 npm test --prefix hosted-backend/cloudflare
 ```
 
@@ -572,7 +585,7 @@ Under **Workers & Pages → smartdocmanager-api → Settings → Variables and S
 | `ALLOW_LEGACY_TOKEN`           | Plaintext             | `true`                                                                                                                                              |
 | `GEMINI_MODEL`                 | Plaintext             | Default: `gemini-3.5-flash-lite`                                                                                                                    |
 | `GROQ_MODEL`                   | Plaintext             | Default: `openai/gpt-oss-20b`                                                                                                                       |
-| `USE_GROQ_ONLY`                | Plaintext             | Default: `true` (Temporary: routes requests directly to Groq, bypassing Gemini)                                                                    |
+| `USE_GROQ_ONLY`                | Plaintext             | Default: `false` (When true, routes requests directly to Groq, bypassing Gemini)                                                                   |
 
 ### 7.3 Cloudflare Abuse Rate Limiter (`CLASSIFY_LIMITER`)
 
@@ -586,14 +599,24 @@ namespace_id = "1001"
 simple = { limit = 10, period = 60 }
 ```
 
-### 7.4 Free API Tier Limits, Client Pacing & Double-Exhaustion Protection
+### 7.4 Free API Tier Limits, Client Pacing & Interactive Quota Dialogs
 
-- **Google Gemini 3.5 Flash Lite**: **15 RPM**, **1,000,000 TPM**, **1,500 RPD** (Free Tier).
-- **Groq Cloud (Failover)**: **30 RPM**, **7,000 RPD** (Free Tier).
-- **Client-Side Self-Throttling**: The app strictly enforces a maximum dispatch rate of **10 requests per 60 seconds** on the client side, avoiding backend rate limiter rejections.
-- **Client Daily Limit (1,000 Requests / 24 Hours)**: The app caps cloud requests to **1,000 requests per day**. When this limit is reached, it displays:
-  `"1000 request per day limit is reached. To process further continue after 24 hours."` and falls back seamlessly to on-device OCR.
-- **Double Exhaustion**: If both Gemini and Groq free tiers are exhausted on the cloud backend, the Worker returns HTTP 429 `{ "error": "quota_exhausted", "message": "All services have surpassed their free quota. Please try after some time." }`.
+- **Google Gemini 3.5 Flash Lite**: **15 RPM**, **1,000,000 TPM**, **1,500 RPD** (Free Tier). The application fully utilizes the complete 1,500 requests per day limit.
+- **Groq Cloud**: **30 RPM**, **7,000 RPD** (Free Tier). Serves as secondary fallback upon user consent when Gemini daily quota is exhausted.
+- **Client-Side Self-Throttling**: The app strictly enforces a maximum dispatch rate of **10 requests per 60 seconds** on the client side, preventing 429 burst limit rejections.
+- **Gemini Quota Exhaustion Dialog (Yes / No)**:
+  - When Gemini quota is exhausted (HTTP 429 or 1,500 requests reached), the app halts queue processing and displays:
+    `"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"` with **Yes** and **No** buttons.
+  - Reset time is dynamically computed based on Gemini's daily quota reset at Midnight US Pacific Time (00:00 PT), formatted in local 24-hour clock time (e.g. `13:30 hours on 18-Nov-2026`).
+- **Groq Quota Exhaustion Dialog (OK)**:
+  - If the user selects **Yes**, processing continues using the Groq API up to its daily limit.
+  - When Groq daily quota is exhausted (HTTP 429), the app displays:
+    `"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."` with an **OK** button.
+  - Reset time is dynamically computed based on Groq's daily reset at Midnight UTC (00:00 UTC), formatted in local 24-hour clock time (e.g. `05:30 hours on 18-Nov-2026`).
+- **Safe Pending Document Preservation**:
+  - If the user selects **No** (or when Groq quota is exhausted), unprocessed documents remain in **pending** status (`status == "pending"` / `processed == "False"`).
+  - There is **no local rule-based heuristic classification** fallback. All file renaming, duplicate relocation to `Download/Duplicates/`, and on-device text extraction (OCR) remain active.
+  - The application automatically tracks pending documents and reprocesses them once the quota reset timestamp passes.
 
 ---
 
@@ -673,15 +696,20 @@ Recreate the complete, production-ready "SmartDocManager" project: a cross-platf
   - Android: Native `PdfRenderer` (up to 40 pages) + Google ML Kit Text Recognition (`com.google.mlkit:text-recognition:16.0.1`).
   - Windows: Native `pypdfium2` textpages + local Tesseract OCR fallback.
 - Full extracted text (unrestricted, removing the prior 16,000 character limit to leverage Gemini's context window) is transmitted to the secure Cloudflare Worker serverless proxy (`smartdocmanager-api`) for AI classification and naming proposal.
-- Client-Side Rate Limiter & Daily Cap:
+- Client-Side Rate Limiter & Daily Free Quotas:
   - Client-side queue pacing guarantees no more than 10 cloud requests per 60 seconds are dispatched.
-  - Per-day cloud request cap of 1,000 requests per 24 hours. When reached, shows: `"1000 request per day limit is reached. To process further continue after 24 hours."` and falls back to local engine.
-- Neither Gemini nor Groq performs OCR:
-  - The Cloudflare Worker calls Google Gemini 3.5 Flash Lite as primary (`gemini-3.5-flash-lite`, with candidate fallback models `gemini-3.1-flash-lite`, `gemini-3.8-flash`, `gemini-3.5-flash`, and `gemini-flash-latest`, 15 RPM / 1,500 RPD free tier) to classify the document, generate a short date-stamped filename proposal, and provide a 1-line justification.
-  - The Worker automatically falls back to Groq (`openai/gpt-oss-20b` via OpenAI-compatible chat completions API, 30 RPM / 7,000 RPD free tier) when Gemini hits HTTP 429 rate limits or provider errors.
-  - If Cloud AI credentials are unconfigured or unavailable, clients automatically fall back to the offline Local Indian Taxonomy Engine.
+  - The application utilizes the full 1,500 requests per day limit for Google Gemini 3.5 Flash Lite (no 1,000 cap).
+  - Default API is always Google Gemini. Manual engine selection is removed from the UI.
+- Quota Exhaustion & Interactive Switch Workflow:
+  - When Gemini quota is exhausted (HTTP 429), client halts and displays:
+    `"Gemini quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date. Do you want me to proceed with Groq?"` with Yes and No buttons.
+    Reset time is calculated based on Midnight US Pacific Time (00:00 PT) in local 24-hour clock time (e.g. `13:30 hours on 18-Nov-2026`).
+  - If user selects Yes, processing proceeds using Groq (`openai/gpt-oss-20b`) utilizing its daily quota.
+  - When Groq quota is exhausted (HTTP 429), client displays:
+    `"Groq quota is completely utilized! It will be reset at <HH:MM> hours on [dd-MMM-yyyy] date."` with OK button.
+    Reset time is calculated based on Midnight UTC (00:00 UTC) in local 24-hour clock time (e.g. `05:30 hours on 18-Nov-2026`).
+  - No Local Rule Fallback: Unprocessed documents remain in pending status (`status == "pending"` / `processed == "False"`). Local rule classification fallback is eliminated. The application keeps track of pending documents and auto-resumes once the quota reset timestamp passes.
 - Zero AI API keys are exposed to clients; all provider keys live in Cloudflare Worker encrypted secrets.
-- Double-Exhaustion Protection: If both Gemini and Groq free tiers are exhausted, the Worker returns HTTP 429 with `{ "error": "quota_exhausted", "message": "All services have surpassed their free quota. Please try after some time." }`. Clients halt processing and display this exact warning.
 
 ### 2. Authentication & Controlled Access:
 
@@ -723,9 +751,9 @@ Recreate the complete, production-ready "SmartDocManager" project: a cross-platf
 - Content-Metadata-Only Classification & Maximum-Identifier Rule: Filenames are strictly excluded from category evaluation. Conflict resolution selects the category with the highest number of distinct matched identifiers.
 - Dual-Layer Duplicate Detection & Auto-Hiding: Evaluates both Tier 1 (SHA-256 binary hash) and Tier 2 (normalized content text and virtual proposed name matching) to catch duplicate documents even when PDF creation timestamps differ. Duplicates are hidden from both active view and search results.
 - Resilient Cloud AI Category Normalization: Accepts and normalizes free-form categories returned by Cloud AI (Gemini 3.5 Flash Lite or Groq) such as `"Invoice"`, `"Medical Report"`, `"Prescription"`, or `"Salary Slip"`, truncating reasoning up to 2,000 characters rather than rejecting with `INVALID_RESPONSE`.
-- Top Header, Runtime AI Engine Switcher & Two-Group Grey Bar:
-  - Header Row: Features Title, Version, interactive runtime AI Engine Switcher (`✨ Gemini` / `⚡ Groq`), and unclipped Sign Out button.
-  - Runtime Primary Engine Selection: Allows instant switching of primary cloud AI (Gemini or Groq) with mutual automatic failover.
+- Top Header & Two-Group Grey Bar:
+  - Header Row: Features Title, Version, non-clickable provider info badge (`✨ Gemini`), and unclipped Sign Out button. Manual engine selection toggle is removed from the UI; Gemini is permanently default primary.
+  - Quota Exhaustion Flow: Interactive dialogs for Gemini (Yes/No switch to Groq) and Groq (OK) with dynamic 24-hour clock reset timestamps.
   - Two-Group Grey Bar Layout:
     - Group 1 (Left Column): Vertically arranged with active folder (`📁 Entire Device` or `📁 <FolderName>`) on top and `[processed / total]` status count at the bottom.
     - Group 2 (Remaining width, `weight(1f)`, extra left padding): Equispaced icons (`SpaceEvenly`): Folder picker (`📁`), Rescan (`🔄`), Play/Pause (`⏸️`/`▶️`), and Filter funnel (`ic_filter.png`).
@@ -793,7 +821,7 @@ Recreate the complete, production-ready "SmartDocManager" project: a cross-platf
 
 ### 9. Test Automation:
 
-- Maintain full test suites: 58 Windows pytest cases (testing core, library, full 519-category Indian taxonomy rules, conflict resolution via maximum-identifier rule, filename exclusion, hosted client, Google login flows, search, and clear buttons) and 15 Cloudflare Worker tests (testing token broker endpoint, token validation, allowlist, failover, and rate limiting).
+- Maintain full test suites: 73 Windows pytest cases (testing core, library, full 519-category Indian taxonomy rules, conflict resolution via maximum-identifier rule, filename exclusion, hosted client, Google login flows, search, and clear buttons) and 23 Cloudflare Worker tests (testing token broker endpoint, token validation, allowlist, failover, 429 strict handling, and rate limiting).
 ```
 
 ---
@@ -811,5 +839,5 @@ Whenever a bug fix is applied, a new feature is added, or an architectural impro
    - Update **Section 5 (Completed Application Features & Workflows)** and **Section 6 (Compilation, Build & Export Guide)** to reflect all current features and commands.
    - Update **Section 9 (Complete Project Recreation Prompt)** so that any AI coding assistant or engineer reading the prompt will generate the exact, current, bug-free codebase from scratch.
 3. **Execute Full Pre-Commit Test Verification:**
-   - Run Windows pytest suite: `powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1` (58 tests passing).
-   - Run Cloudflare Worker test suite: `npm test --prefix hosted-backend/cloudflare` (15 tests passing).
+   - Run Windows pytest suite: `powershell -ExecutionPolicy Bypass -File scripts\07-test-windows.ps1` (73 tests passing).
+   - Run Cloudflare Worker test suite: `npm test --prefix hosted-backend/cloudflare` (23 tests passing).

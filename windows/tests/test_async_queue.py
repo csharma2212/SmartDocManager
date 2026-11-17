@@ -102,7 +102,7 @@ def test_sequential_gemini_queue_failure_callback(tmp_path, monkeypatch):
     assert not queue.is_busy()
     assert len(callback_called) == 1
     rec = rows(conn, docs_dir)[0]
-    assert rec['status'] == 'done'
+    assert rec['status'] == 'pending'
     spec = json.loads(rec['specifics'])
     assert '503' in spec['cloud_error']
     assert 'missing GEMINI_API_KEY' not in spec['cloud_error']

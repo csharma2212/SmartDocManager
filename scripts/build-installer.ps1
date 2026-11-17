@@ -37,7 +37,8 @@ $distDir = Join-Path $Root 'output/windows/dist'
 $buildDir = Join-Path $Root 'output/windows/build_onedir'
 
 Write-Status "Building fast uncompressed application directory with PyInstaller..."
-Invoke-Checked $pyinstaller @(
+Invoke-Checked $py @(
+    '-m', 'PyInstaller',
     '--distpath', $distDir,
     '--workpath', $buildDir,
     '--noconfirm',

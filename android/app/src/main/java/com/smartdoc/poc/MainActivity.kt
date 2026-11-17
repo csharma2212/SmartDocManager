@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -295,6 +296,27 @@ fun getDocTypeFromExt(ext: String): String {
         "txt" -> "Text"
         else -> "Document"
     }
+}
+
+fun parseTokenExpiryMillis(idToken: String): Long {
+    if (idToken.isBlank()) return 0L
+    try {
+        val parts = idToken.split(".")
+        if (parts.size >= 2) {
+            val payloadBytes = android.util.Base64.decode(
+                parts[1],
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING
+            )
+            val json = JSONObject(String(payloadBytes, Charsets.UTF_8))
+            val exp = json.optLong("exp", 0L)
+            if (exp > 0L) {
+                return exp * 1000L
+            }
+        }
+    } catch (e: Exception) {
+        Log.w("SmartDoc", "Could not parse JWT exp claim: ${e.message}")
+    }
+    return System.currentTimeMillis() + (3600L * 1000L)
 }
 
 private fun restore(context: Context): List<Doc> {
@@ -1586,7 +1608,7 @@ fun LibraryScreen() {
     val savedMode = authPrefs.getString("auth_mode", "") ?: ""
     val savedToken = authPrefs.getString("token", "") ?: ""
     val savedExpiresAt = authPrefs.getLong("expires_at", 0L)
-    val isSessionValid = wasLoggedIn && (savedExpiresAt == 0L || System.currentTimeMillis() < savedExpiresAt)
+    val isSessionValid = wasLoggedIn && (savedExpiresAt == 0L || System.currentTimeMillis() < (savedExpiresAt - 60_000L))
 
     var signedIn by remember { mutableStateOf(isSessionValid) }
     var isOfflineMode by remember { mutableStateOf(isSessionValid && savedMode == "offline") }
@@ -1597,18 +1619,56 @@ fun LibraryScreen() {
 
     val aiProviderPrefs = context.getSharedPreferences("smartdoc_ai_engine", Context.MODE_PRIVATE)
     var selectedAiProvider by remember { mutableStateOf(aiProviderPrefs.getString("primary_provider", "gemini") ?: "gemini") }
+    var remainingDailyQuota by remember(selectedAiProvider) { mutableStateOf(RateLimiter.getRemainingDailyQuota(context, selectedAiProvider)) }
+    var quotaDisplayStr by remember(selectedAiProvider) { mutableStateOf(RateLimiter.formatQuotaDisplay(context, selectedAiProvider)) }
 
-    fun toggleAiProvider() {
-        val newProvider = if (selectedAiProvider == "gemini") "groq" else "gemini"
-        selectedAiProvider = newProvider
-        aiProviderPrefs.edit().putString("primary_provider", newProvider).apply()
-        val name = if (newProvider == "gemini") "Google Gemini" else "Groq"
-        Toast.makeText(context, "Primary AI Engine set to $name", Toast.LENGTH_SHORT).show()
+    var showGeminiQuotaDialog by remember { mutableStateOf(false) }
+    var geminiResetHour by remember { mutableStateOf("") }
+    var geminiResetDate by remember { mutableStateOf("") }
+
+    var showGroqQuotaDialog by remember { mutableStateOf(false) }
+    var groqResetHour by remember { mutableStateOf("") }
+    var groqResetDate by remember { mutableStateOf("") }
+
+    var showQuotaRestoredDialog by remember { mutableStateOf(false) }
+    var quotaRestoredMessage by remember { mutableStateOf("") }
+
+    var showReauthDialog by remember { mutableStateOf(false) }
+
+    var isScanning by remember { mutableStateOf(false) }
+    var isQueuePaused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val geminiRestored = RateLimiter.checkAndClearQuotaRestored(context, "gemini")
+            val groqRestored = RateLimiter.checkAndClearQuotaRestored(context, "groq")
+            if (geminiRestored && groqRestored) {
+                selectedAiProvider = "gemini"
+                aiProviderPrefs.edit().putString("primary_provider", "gemini").apply()
+                remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, "gemini")
+                quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "gemini")
+                quotaRestoredMessage = "Both Google Gemini and Groq quotas have been restored! You can resume processing."
+                showQuotaRestoredDialog = true
+                isQueuePaused = false
+            } else if (geminiRestored) {
+                selectedAiProvider = "gemini"
+                aiProviderPrefs.edit().putString("primary_provider", "gemini").apply()
+                remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, "gemini")
+                quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "gemini")
+                quotaRestoredMessage = "Google Gemini quota has been restored! Daily limit is reset to 1500 requests."
+                showQuotaRestoredDialog = true
+                isQueuePaused = false
+            } else if (groqRestored) {
+                remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, selectedAiProvider)
+                quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, selectedAiProvider)
+                quotaRestoredMessage = "Groq quota has been restored! Limit has been reset."
+                showQuotaRestoredDialog = true
+            }
+            delay(3000L)
+        }
     }
 
     var hasPermission by remember { mutableStateOf(hasStoragePermission(context)) }
-    var isScanning by remember { mutableStateOf(false) }
-    var isQueuePaused by remember { mutableStateOf(false) }
 
     var activeProcessingFile by remember { mutableStateOf("") }
     var activeProcessingPath by remember { mutableStateOf("") }
@@ -1617,8 +1677,8 @@ fun LibraryScreen() {
     var hasNotifiedCompletion by remember { mutableStateOf(false) }
     var completionBannerMessage by remember { mutableStateOf("") }
     var dailyLimitNotice by remember { mutableStateOf("") }
-    val allProcessed = items.isNotEmpty() && !isScanning && items.none { it.status == "False" || it.status == "Processing" }
-    val isActivelyProcessing = isScanning || (items.isNotEmpty() && items.any { it.status == "False" || it.status == "Processing" })
+    val allProcessed = items.isNotEmpty() && !isScanning && (isQueuePaused || items.none { it.status == "False" || it.status == "Processing" })
+    val isActivelyProcessing = isScanning || (items.isNotEmpty() && !isQueuePaused && items.any { it.status == "False" || it.status == "Processing" })
 
     var typeFilter by remember { mutableStateOf("ALL") }
     var searchQuery by remember { mutableStateOf("") }
@@ -1678,7 +1738,7 @@ fun LibraryScreen() {
     var headerTapCount by remember { mutableStateOf(0) }
     var lastHeaderTapTime by remember { mutableStateOf(0L) }
 
-    var expandedUris by remember { mutableStateOf(setOf<String>()) }
+    var expandedDocUri by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
@@ -1699,6 +1759,67 @@ fun LibraryScreen() {
         items = newItems
         scope.launch {
             saveAsync(context, newItems)
+        }
+    }
+
+    val performGoogleSignIn: () -> Unit = {
+        scope.launch {
+            val webClientId = AppConstants.getGoogleWebClientId(context)
+            if (webClientId.startsWith("REPLACE_")) {
+                notice = "Configure google_web_client_id in shared-spec/app-config.json before building"
+                return@launch
+            }
+            try {
+                val manager = CredentialManager.create(context)
+                val option = GetGoogleIdOption.Builder()
+                    .setServerClientId(webClientId)
+                    .setFilterByAuthorizedAccounts(false)
+                    .build()
+                val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
+                val result = manager.getCredential(context, request)
+                val credential = result.credential
+                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleId = GoogleIdTokenCredential.createFrom(credential.data)
+                    token = googleId.idToken
+                    signedIn = true
+                    isOfflineMode = false
+                    showReauthDialog = false
+                    isQueuePaused = false
+                    notice = "Signed in as ${googleId.id}"
+
+                    val expiresAt = parseTokenExpiryMillis(googleId.idToken)
+                    authPrefs.edit()
+                        .putBoolean("is_logged_in", true)
+                        .putString("auth_mode", "google")
+                        .putString("token", googleId.idToken)
+                        .putString("email", googleId.id)
+                        .putLong("expires_at", expiresAt)
+                        .apply()
+
+                    val needsRequeue = items.any { it.status == "Error" && (it.responseReceived.contains("Unauthorized") || it.responseReceived.contains("AUTH_REQUIRED") || it.responseReceived.contains("missing or expired")) }
+                    if (needsRequeue) {
+                        val resetDocs = items.map { item ->
+                            if (item.status == "Error" && (item.responseReceived.contains("Unauthorized") || item.responseReceived.contains("AUTH_REQUIRED") || item.responseReceived.contains("missing or expired"))) {
+                                item.copy(status = "False", category = "Pending Analysis")
+                            } else {
+                                item
+                            }
+                        }
+                        refresh(resetDocs)
+                    }
+
+                    Log.i("SmartDoc", "Google Sign-In successful: ${googleId.id}")
+                    Toast.makeText(context, "Signed in as ${googleId.id}", Toast.LENGTH_SHORT).show()
+                } else {
+                    notice = "Google Sign-In did not return an identity token. Please ensure your Google account is configured."
+                }
+            } catch (e: GetCredentialCancellationException) {
+                Log.i("SmartDoc", "Sign-in cancelled by user")
+            } catch (e: Throwable) {
+                Log.e("SmartDoc", "Google Sign-In error: ${e.message}", e)
+                notice = "Google Sign-In error: ${e.message ?: "Authentication failed"}. Please retry with an authorized Google account."
+                Toast.makeText(context, "Authentication failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1726,6 +1847,10 @@ fun LibraryScreen() {
                 } catch (_: Exception) {}
             }
             val folderName = getFolderNameFromUri(context, uri)
+            val prevFolderUri = libPrefs.getString("scanned_folder_uri", "") ?: ""
+            val isSameFolder = prevFolderUri == uri.toString()
+            val hasPendingDocs = items.any { it.status != "True" && it.status != "Error" && it.status != "Skipped" && it.status != "Duplicate" }
+            val effectiveRetain = if (isSameFolder && hasPendingDocs) true else retainExisting
             selectedScanFolderName = folderName
             libPrefs.edit()
                 .putString("scanned_folder_name", folderName)
@@ -1756,7 +1881,7 @@ fun LibraryScreen() {
                 }
             } else emptyMap()
             val finalFound = deduplicatedInitial.map { movedInitialMap[it.uri] ?: it }
-            refresh(merge(items, finalFound, retainExisting))
+            refresh(merge(items, finalFound, effectiveRetain))
             isScanning = false
         }
     }
@@ -1768,6 +1893,10 @@ fun LibraryScreen() {
             hasNotifiedCompletion = false
             selectedUris = emptySet()
             activeProcessingFile = ""
+            val prevScope = libPrefs.getString("scanned_folder_name", "") ?: ""
+            val isSameScope = prevScope == "Entire Device"
+            val hasPendingDocs = items.any { it.status != "True" && it.status != "Error" && it.status != "Skipped" && it.status != "Duplicate" }
+            val effectiveRetain = if (isSameScope && hasPendingDocs) true else retainExisting
             selectedScanFolderName = "Entire Device"
             libPrefs.edit()
                 .putString("scanned_folder_name", "Entire Device")
@@ -1795,7 +1924,7 @@ fun LibraryScreen() {
                 }
             } else emptyMap()
             val finalFound = deduplicatedInitial.map { movedInitialMap[it.uri] ?: it }
-            refresh(merge(items, finalFound, retainExisting))
+            refresh(merge(items, finalFound, effectiveRetain))
             isScanning = false
         }
     }
@@ -1817,7 +1946,9 @@ fun LibraryScreen() {
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            startFolderScan(uri)
+            val prevUri = libPrefs.getString("scanned_folder_uri", "") ?: ""
+            val isDifferent = prevUri.isNotBlank() && prevUri != uri.toString()
+            startFolderScan(uri, retainExisting = !isDifferent)
         } else {
             // User cancelled folder selection: fall back to complete phone scan as per default behavior
             Toast.makeText(context, "Folder selection cancelled. Starting entire device scan...", Toast.LENGTH_SHORT).show()
@@ -1945,13 +2076,25 @@ fun LibraryScreen() {
     }
 
     // Background Processing Worker
-    LaunchedEffect(signedIn, isQueuePaused, selectedAiProvider) {
+    LaunchedEffect(signedIn, isQueuePaused, selectedAiProvider, token) {
         if (!signedIn || isQueuePaused) return@LaunchedEffect
         Log.i("SmartDoc", "Processing worker active. Paused: $isQueuePaused")
         while (isActive) {
             if (isScanning) {
                 delay(500)
                 continue
+            }
+
+            val tokenExp = parseTokenExpiryMillis(token)
+            val isTokenExpired = token.isBlank() || (tokenExp > 0L && System.currentTimeMillis() >= (tokenExp - 60_000L))
+            if (isTokenExpired) {
+                Log.w("SmartDoc", "Token is expired or missing. Pausing worker.")
+                withContext(Dispatchers.Main) {
+                    showReauthDialog = true
+                    isQueuePaused = true
+                }
+                delay(1000)
+                break
             }
 
             val pending = items.firstOrNull {
@@ -2047,14 +2190,26 @@ fun LibraryScreen() {
                     val cleanText = extractedText.replace(Regex("""[^a-zA-Z0-9]"""), "")
                     if (cleanText.length < 5) {
                         Log.i("SmartDoc", "Pre-backend check: ${pending.name} contains no valid textual content (${cleanText.length} chars). Dropping cloud request...")
+                        val dropPayload = JSONObject()
+                            .put("filename", pending.name)
+                            .put("provider", selectedAiProvider)
+                            .put("extracted_chars", cleanText.length)
+                            .put("reason", "Document contains no readable alphanumeric text (< 5 chars)")
+                            .toString(2)
+                        val dropResp = JSONObject()
+                            .put("status", "UNCATEGORIZABLE")
+                            .put("action", "Cloud request dropped to conserve AI quota")
+                            .put("category", "Other Document")
+                            .put("note", "File has no readable text")
+                            .toString(2)
                         val noTextRes = Classifier.Result(
                             name = pending.name,
                             category = Classifier.FALLBACK,
                             specifics = "No readable text found (dropped from cloud requests)",
                             status = "UNCATEGORIZABLE",
-                            suggestedName = "N/A",
-                            promptSent = "On-device check: Document contains no readable alphanumeric text (${cleanText.length} chars). Cloud request dropped.",
-                            rawResponse = "No readable text found. Cloud request dropped to conserve AI quota."
+                            suggestedName = Classifier.generateCompliantProposedName("Other Document", "Document", null, pending.name, extractedText),
+                            promptSent = dropPayload,
+                            rawResponse = dropResp
                         )
                         return@withContext ClassifierResultData(noTextRes, extractedText, dimensions, docHash, isDuplicate = false, relocatedDoc = null)
                     }
@@ -2070,103 +2225,193 @@ fun LibraryScreen() {
                         Log.i("SmartDoc", "Pre-backend check: ${pending.name} is a content duplicate. Relocating to Download/Duplicates/...")
                         val movedMap = moveDuplicatesToDuplicatesFolder(context, listOf(pending.copy(digest = docHash, extractedText = extractedText, status = "Duplicate")))
                         val relocated = movedMap[pending.uri]
+                        val dupPayload = JSONObject()
+                            .put("filename", pending.name)
+                            .put("sha256", docHash)
+                            .put("reason", "Content duplicate signature matches an existing document in library")
+                            .toString(2)
+                        val dupResp = JSONObject()
+                            .put("status", "DUPLICATE_RELOCATED")
+                            .put("destination", "Download/Duplicates/")
+                            .put("note", "Duplicate file relocated. Zero cloud AI requests consumed.")
+                            .toString(2)
                         val dupRes = Classifier.Result(
                             name = pending.name,
                             category = Classifier.FALLBACK,
                             specifics = "Content duplicate detected. Relocated to Download/Duplicates/.",
                             status = "DUPLICATE_RELOCATED",
                             suggestedName = "N/A",
-                            promptSent = "Content check: Normalized text signature matches an existing document. Cloud request skipped.",
-                            rawResponse = "Duplicate file relocated to Download/Duplicates/. Zero backend requests sent."
+                            promptSent = dupPayload,
+                            rawResponse = dupResp
                         )
                         return@withContext ClassifierResultData(dupRes, extractedText, dimensions, docHash, isDuplicate = true, relocatedDoc = relocated)
                     }
 
                     // STEP 5: Only unique files with valid textual content proceed to Cloud AI Backend!
                     val classifierRes = if (token.isNotBlank()) {
-                        val (canRequest, limitMessage) = RateLimiter.checkDailyLimit(context)
+                        val (canRequest, limitMessage) = RateLimiter.checkDailyLimit(context, selectedAiProvider)
+                        val isGemini = selectedAiProvider.lowercase() == "gemini"
                         if (!canRequest) {
-                            if (dailyLimitNotice != limitMessage) {
-                                dailyLimitNotice = limitMessage
+                            if (isGemini) {
+                                val (h, d) = RateLimiter.getGeminiResetInfo()
+                                RateLimiter.markQuotaExhausted(context, "gemini")
                                 withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, limitMessage, Toast.LENGTH_LONG).show()
+                                    geminiResetHour = h
+                                    geminiResetDate = d
+                                    showGeminiQuotaDialog = true
+                                    isQueuePaused = true
+                                    remainingDailyQuota = 0
+                                    quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "gemini")
                                 }
-                            }
-                            val local = Classifier.classifyLocally(extractedText, pending.name)
-                            local.copy(
-                                promptSent = "Cloud rate limit: $limitMessage",
-                                rawResponse = "⚠️ $limitMessage\n\n[ON-DEVICE FALLBACK RESULT]\n${local.rawResponse}"
-                            )
-                        } else {
-                            // Client-side self-throttling: strictly max 10 requests per 60 seconds
-                            RateLimiter.waitForSlot()
-                            RateLimiter.recordRequest(context)
-
-                            val cloudRes = if (pages.isNotEmpty()) {
-                                HostedClassifier.classifyPages(pending.name, pages, backend, token, preferredProvider = selectedAiProvider)
+                                val qPayload = JSONObject()
+                                    .put("filename", pending.name)
+                                    .put("provider", selectedAiProvider)
+                                    .put("status", "QUOTA_EXHAUSTED")
+                                    .toString(2)
+                                val qResp = JSONObject()
+                                    .put("error", "AI quota exhausted")
+                                    .put("message", "Gemini quota is completely utilized! It will be reset at $h hours on $d date.")
+                                    .put("reset_clock", "$h hours")
+                                    .put("reset_date", d)
+                                    .toString(2)
+                                Classifier.Result(
+                                    pending.name,
+                                    specifics = "Gemini quota is completely utilized! It will be reset at $h hours on $d date.",
+                                    status = "QUOTA_EXHAUSTED",
+                                    promptSent = qPayload,
+                                    rawResponse = qResp
+                                )
                             } else {
-                                HostedClassifier.classifyText(pending.name, extractedText, backend, token, preferredProvider = selectedAiProvider)
+                                val (h, d) = RateLimiter.getGroqResetInfo()
+                                RateLimiter.markQuotaExhausted(context, "groq")
+                                withContext(Dispatchers.Main) {
+                                    groqResetHour = h
+                                    groqResetDate = d
+                                    showGroqQuotaDialog = true
+                                    isQueuePaused = true
+                                    remainingDailyQuota = 0
+                                    quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "groq")
+                                }
+                                val qPayload = JSONObject()
+                                    .put("filename", pending.name)
+                                    .put("provider", selectedAiProvider)
+                                    .put("status", "QUOTA_EXHAUSTED")
+                                    .toString(2)
+                                val qResp = JSONObject()
+                                    .put("error", "AI quota exhausted")
+                                    .put("message", "Groq quota is completely utilized! It will be reset at $h hours on $d date.")
+                                    .put("reset_clock", "$h hours")
+                                    .put("reset_date", d)
+                                    .toString(2)
+                                Classifier.Result(
+                                    pending.name,
+                                    specifics = "Groq quota is completely utilized! It will be reset at $h hours on $d date.",
+                                    status = "QUOTA_EXHAUSTED",
+                                    promptSent = qPayload,
+                                    rawResponse = qResp
+                                )
                             }
+                        } else {
+                            val reqStartTime = System.currentTimeMillis()
+                            RateLimiter.waitForSlot()
+                            RateLimiter.recordRequest(context, selectedAiProvider)
+                            withContext(Dispatchers.Main) {
+                                remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, selectedAiProvider)
+                                quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, selectedAiProvider)
+                            }
+
+                            val cloudRes = HostedClassifier.classifyText(pending.name, extractedText, backend, token, preferredProvider = selectedAiProvider)
+                            val elapsedMs = System.currentTimeMillis() - reqStartTime
+                            RateLimiter.applyPostRequestDelay(selectedAiProvider, elapsedMs)
+
                             if (cloudRes.status == "OK" || cloudRes.status == "UNCATEGORIZABLE") {
                                 cloudRes
                             } else {
-                                val local = Classifier.classifyLocally(extractedText, pending.name)
-                                val failureDetail = try {
-                                    if (cloudRes.rawResponse.startsWith("{")) {
-                                        val j = JSONObject(cloudRes.rawResponse)
-                                        val isGroq = selectedAiProvider.lowercase() == "groq"
-                                        val provName = if (isGroq) "Groq" else "Google Gemini"
-                                        val errMsg = if (isGroq) {
-                                            j.optString("groq_message").ifBlank { j.optString("gemini_message").ifBlank { j.optString("message") } }
-                                        } else {
-                                            j.optString("gemini_message").ifBlank { j.optString("groq_message").ifBlank { j.optString("message") } }
+                                val isQuota = cloudRes.status == "QUOTA_EXHAUSTED" || cloudRes.rawResponse.contains("429") || cloudRes.rawResponse.contains("quota")
+                                val isAuthError = cloudRes.status == "UNAUTHORIZED" || cloudRes.rawResponse.contains("Unauthorized") || cloudRes.specifics.contains("401") || cloudRes.rawResponse.contains("TOKEN_EXPIRED") || cloudRes.rawResponse.contains("AUDIENCE_MISMATCH")
+                                if (isQuota) {
+                                    if (isGemini) {
+                                        val (h, d) = RateLimiter.getGeminiResetInfo()
+                                        RateLimiter.markQuotaExhausted(context, "gemini")
+                                        withContext(Dispatchers.Main) {
+                                            geminiResetHour = h
+                                            geminiResetDate = d
+                                            showGeminiQuotaDialog = true
+                                            isQueuePaused = true
+                                            remainingDailyQuota = 0
+                                            quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "gemini")
                                         }
-                                        val errStatus = if (isGroq) {
-                                            j.optString("groq_status").ifBlank { j.optString("gemini_status") }
-                                        } else {
-                                            j.optString("gemini_status").ifBlank { j.optString("groq_status") }
-                                        }
-                                        val model = if (isGroq) {
-                                            j.optString("groq_model").ifBlank { "openai/gpt-oss-20b" }
-                                        } else {
-                                            j.optString("gemini_model").ifBlank { "gemini-3.5-flash-lite" }
-                                        }
-                                        val gCode = j.optString("gemini_code")
-                                        val provStatus = j.optString("provider_status")
-                                        buildString {
-                                            append(if (cloudRes.status == "QUOTA_EXHAUSTED") "$provName quota limit reached" else "$provName status: ${cloudRes.status}")
-                                            if (provStatus.isNotBlank() && provStatus != "0") append(" (Gateway HTTP $provStatus)")
-                                            append("\n• Model: $model")
-                                            if (!isGroq && gCode.isNotBlank() && gCode != "0") append(" (Google HTTP $gCode)")
-                                            if (errStatus.isNotBlank()) append("\n• Error Status: $errStatus")
-                                            if (errMsg.isNotBlank()) append("\n• Root Cause: $errMsg")
-                                        }
+                                        cloudRes.copy(
+                                            specifics = "Gemini quota is completely utilized! It will be reset at $h hours on $d date.",
+                                            status = "QUOTA_EXHAUSTED"
+                                        )
                                     } else {
-                                        val provName = if (selectedAiProvider.lowercase() == "groq") "Groq" else "Cloud AI"
-                                        if (cloudRes.status == "QUOTA_EXHAUSTED") "$provName quota limit reached (${cloudRes.rawResponse})" else "$provName status: ${cloudRes.status} (${cloudRes.rawResponse})"
+                                        val (h, d) = RateLimiter.getGroqResetInfo()
+                                        RateLimiter.markQuotaExhausted(context, "groq")
+                                        withContext(Dispatchers.Main) {
+                                            groqResetHour = h
+                                            groqResetDate = d
+                                            showGroqQuotaDialog = true
+                                            isQueuePaused = true
+                                            remainingDailyQuota = 0
+                                            quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "groq")
+                                        }
+                                        cloudRes.copy(
+                                            specifics = "Groq quota is completely utilized! It will be reset at $h hours on $d date.",
+                                            status = "QUOTA_EXHAUSTED"
+                                        )
                                     }
-                                } catch (_: Exception) {
-                                    val provName = if (selectedAiProvider.lowercase() == "groq") "Groq" else "Cloud AI"
-                                    if (cloudRes.status == "QUOTA_EXHAUSTED") "$provName quota limit reached" else "$provName status: ${cloudRes.status}"
+                                } else if (isAuthError) {
+                                    withContext(Dispatchers.Main) {
+                                        showReauthDialog = true
+                                        isQueuePaused = true
+                                    }
+                                    cloudRes.copy(
+                                        specifics = "Google session expired or unauthorized. Please re-authenticate.",
+                                        status = "AUTH_REQUIRED"
+                                    )
+                                } else {
+                                    cloudRes
                                 }
-                                local.copy(
-                                    promptSent = cloudRes.promptSent.ifBlank { "POST ${backend.trimEnd('/')}/v1/classify\nSnippet: ${extractedText.take(300)}" },
-                                    rawResponse = "$failureDetail\n\n[ON-DEVICE FALLBACK RESULT]\n${local.rawResponse}"
-                                )
                             }
                         }
                     } else {
-                        Classifier.classifyLocally(extractedText, pending.name)
+                        val authPayload = JSONObject()
+                            .put("filename", pending.name)
+                            .put("provider", selectedAiProvider)
+                            .put("auth_token", "MISSING")
+                            .toString(2)
+                        val authResp = JSONObject()
+                            .put("error", "Unauthorized")
+                            .put("message", "Google Sign-In identity token is missing or session expired. Please sign in again.")
+                            .toString(2)
+                        Classifier.Result(
+                            pending.name,
+                            specifics = "Signed out / Authentication token missing",
+                            status = "AUTH_REQUIRED",
+                            promptSent = authPayload,
+                            rawResponse = authResp
+                        )
                     }
                     ClassifierResultData(classifierRes, extractedText, dimensions, docHash, isDuplicate = false, relocatedDoc = null)
                 } catch (e: Exception) {
                     Log.e("SmartDoc", "Exception processing ${pending.name}: ${e.message}", e)
+                    val exPayload = JSONObject()
+                        .put("filename", pending.name)
+                        .put("provider", selectedAiProvider)
+                        .put("step", "Page extraction or local OCR")
+                        .toString(2)
+                    val exResp = JSONObject()
+                        .put("error", "Processing exception")
+                        .put("exception_message", e.message ?: "Unknown exception")
+                        .put("exception_class", e.javaClass.simpleName)
+                        .toString(2)
                     val errRes = Classifier.Result(
                         name = pending.name,
                         specifics = e.message ?: "Processing exception",
                         status = "PROCESSING_ERROR",
-                        promptSent = "Exception during page extraction/OCR",
-                        rawResponse = "Error: ${e.message}"
+                        promptSent = exPayload,
+                        rawResponse = exResp
                     )
                     ClassifierResultData(errRes, "", "", "", isDuplicate = false, relocatedDoc = null)
                 }
@@ -2189,7 +2434,11 @@ fun LibraryScreen() {
                             metadata = stepData.result.metadata
                         )
                     } else if (stepData.result.status == "OK" || stepData.result.status == "UNCATEGORIZABLE") {
-                        val proposal = if (stepData.result.status == "UNCATEGORIZABLE") "N/A" else safeName(stepData.result.suggestedName.ifBlank { Classifier.generateBestProposedName(stepData.result.category, stepData.extractedText, item.name) }, item.name)
+                        val proposal = if (stepData.result.status == "UNCATEGORIZABLE") {
+                            safeName(stepData.result.suggestedName.ifBlank { Classifier.generateCompliantProposedName("Other Document", "Document", null, item.name, stepData.extractedText) }, item.name)
+                        } else {
+                            safeName(stepData.result.suggestedName.ifBlank { Classifier.generateCompliantProposedName(stepData.result.category, null, null, item.name, stepData.extractedText) }, item.name)
+                        }
                         item.copy(
                             status = "True",
                             category = stepData.result.category,
@@ -2202,10 +2451,13 @@ fun LibraryScreen() {
                             metadata = stepData.result.metadata
                         )
                     } else {
+                        val isQuota = stepData.result.status == "QUOTA_EXHAUSTED"
+                        val isAuth = stepData.result.status == "AUTH_REQUIRED" || stepData.result.status == "UNAUTHORIZED"
+                        val fallbackProposal = safeName(Classifier.generateCompliantProposedName("Other Document", "Document", null, item.name, stepData.extractedText), item.name)
                         item.copy(
-                            status = "Error",
-                            category = "Unclassified",
-                            proposed = item.name,
+                            status = if (isQuota || isAuth) "False" else "Error",
+                            category = if (isQuota || isAuth) "Pending Analysis" else "Unclassified",
+                            proposed = if (isQuota || isAuth) fallbackProposal else item.name,
                             promptSent = stepData.result.promptSent,
                             responseReceived = stepData.result.rawResponse.ifBlank { stepData.result.specifics },
                             extractedText = stepData.extractedText,
@@ -2219,6 +2471,7 @@ fun LibraryScreen() {
                 }
             }
             refresh(updated)
+            remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, selectedAiProvider)
             delay(150)
         }
     }
@@ -2246,75 +2499,10 @@ fun LibraryScreen() {
                 Spacer(Modifier.height(32.dp))
 
                 Button(
-                    onClick = {
-                        scope.launch {
-                            val webClientId = AppConstants.getGoogleWebClientId(context)
-                            if (webClientId.startsWith("REPLACE_")) {
-                                notice = "Configure google_web_client_id in shared-spec/app-config.json before building"
-                                return@launch
-                            }
-                            try {
-                                val manager = CredentialManager.create(context)
-                                val option = GetGoogleIdOption.Builder()
-                                    .setServerClientId(webClientId)
-                                    .setFilterByAuthorizedAccounts(false)
-                                    .build()
-                                val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
-                                val result = manager.getCredential(context, request)
-                                val credential = result.credential
-                                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                                    val googleId = GoogleIdTokenCredential.createFrom(credential.data)
-                                    token = googleId.idToken
-                                    signedIn = true
-                                    isOfflineMode = false
-                                    notice = "Signed in as ${googleId.id}"
-
-                                    val expiresAt = System.currentTimeMillis() + (7L * 24 * 3600 * 1000)
-                                    authPrefs.edit()
-                                        .putBoolean("is_logged_in", true)
-                                        .putString("auth_mode", "google")
-                                        .putString("token", googleId.idToken)
-                                        .putString("email", googleId.id)
-                                        .putLong("expires_at", expiresAt)
-                                        .apply()
-
-                                    Log.i("SmartDoc", "Google Sign-In successful: ${googleId.id}")
-                                } else {
-                                    notice = "Google Sign-In did not return an identity token. Tap 'Continue in Offline Mode' below."
-                                }
-                            } catch (e: GetCredentialCancellationException) {
-                                Log.i("SmartDoc", "Sign-in cancelled by user")
-                            } catch (e: Throwable) {
-                                Log.e("SmartDoc", "Google Sign-In error: ${e.message}", e)
-                                notice = "Google Sign-In error: ${e.message ?: "Authentication failed"}. Tap 'Continue in Offline Mode' below."
-                            }
-                        }
-                    },
+                    onClick = { performGoogleSignIn() },
                     modifier = Modifier.fillMaxWidth(0.85f)
                 ) {
                     Text("Sign in with Google")
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                OutlinedButton(
-                    onClick = {
-                        signedIn = true
-                        isOfflineMode = true
-                        token = ""
-                        notice = "Running in Offline / Local Mode"
-
-                        authPrefs.edit()
-                            .putBoolean("is_logged_in", true)
-                            .putString("auth_mode", "offline")
-                            .putString("token", "")
-                            .putString("email", "Offline User")
-                            .putLong("expires_at", Long.MAX_VALUE)
-                            .apply()
-                    },
-                    modifier = Modifier.fillMaxWidth(0.85f)
-                ) {
-                    Text("Continue in Offline / Local Mode")
                 }
 
                 if (notice.isNotBlank()) {
@@ -2408,6 +2596,129 @@ fun LibraryScreen() {
                 dismissButton = {
                     TextButton(onClick = { showStorageDialog = false }) {
                         Text("Close")
+                    }
+                }
+            )
+        }
+
+        if (showGeminiQuotaDialog) {
+            AlertDialog(
+                onDismissRequest = { /* user must select Yes or No */ },
+                title = { Text("Gemini Quota Notice", fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "Gemini quota is completely utilized! It will be reset at $geminiResetHour hours on $geminiResetDate date. Do you want me to proceed with Groq?",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showGeminiQuotaDialog = false
+                        selectedAiProvider = "groq"
+                        aiProviderPrefs.edit().putString("primary_provider", "groq").apply()
+                        if (RateLimiter.isQuotaExhausted(context, "groq")) {
+                            val (h, d) = RateLimiter.getGroqResetInfo()
+                            groqResetHour = h
+                            groqResetDate = d
+                            showGroqQuotaDialog = true
+                            isQueuePaused = true
+                            remainingDailyQuota = 0
+                            quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "groq")
+                        } else {
+                            RateLimiter.clearMinuteWindow()
+                            remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, "groq")
+                            quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "groq")
+                            isQueuePaused = false
+                        }
+                    }) {
+                        Text("Yes")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = {
+                        showGeminiQuotaDialog = false
+                        isQueuePaused = true
+                    }) {
+                        Text("No")
+                    }
+                }
+            )
+        }
+
+        if (showGroqQuotaDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showGroqQuotaDialog = false
+                    selectedAiProvider = "gemini"
+                    aiProviderPrefs.edit().putString("primary_provider", "gemini").apply()
+                    remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, "gemini")
+                    quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "gemini")
+                    isQueuePaused = true
+                },
+                title = { Text("Groq Quota Notice", fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "Groq quota is completely utilized! It will be reset at $groqResetHour hours on $groqResetDate date.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showGroqQuotaDialog = false
+                        selectedAiProvider = "gemini"
+                        aiProviderPrefs.edit().putString("primary_provider", "gemini").apply()
+                        remainingDailyQuota = RateLimiter.getRemainingDailyQuota(context, "gemini")
+                        quotaDisplayStr = RateLimiter.formatQuotaDisplay(context, "gemini")
+                        isQueuePaused = true
+                    }) {
+                        Text("OK")
+                    }
+                }
+            )
+        }
+
+        if (showQuotaRestoredDialog) {
+            AlertDialog(
+                onDismissRequest = { showQuotaRestoredDialog = false },
+                title = { Text("Quota Restored", fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        quotaRestoredMessage,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { showQuotaRestoredDialog = false }) {
+                        Text("OK")
+                    }
+                }
+            )
+        }
+
+        if (showReauthDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showReauthDialog = false
+                    isQueuePaused = true
+                },
+                title = { Text("Sign-In Expired", fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "Your Google Sign-In session has expired or requires renewal. Please sign in again to continue document classification.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { performGoogleSignIn() }) {
+                        Text("Sign in with Google")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = {
+                        showReauthDialog = false
+                        isQueuePaused = true
+                    }) {
+                        Text("Cancel")
                     }
                 }
             )
@@ -2583,11 +2894,16 @@ fun LibraryScreen() {
                 confirmButtonText = { "Scan '${it.name.ifBlank { "Folder" }}' (Recursive)" },
                 onFolderSelected = { targetDir ->
                     showScanFolderPromptDialog = false
-                    startFolderScan(Uri.fromFile(targetDir))
+                    val targetUri = Uri.fromFile(targetDir)
+                    val prevUri = libPrefs.getString("scanned_folder_uri", "") ?: ""
+                    val isDifferent = prevUri.isNotBlank() && prevUri != targetUri.toString()
+                    startFolderScan(targetUri, retainExisting = !isDifferent)
                 },
                 onEntirePhoneSelected = {
                     showScanFolderPromptDialog = false
-                    startFullDeviceScan()
+                    val prevScope = libPrefs.getString("scanned_folder_name", "") ?: ""
+                    val isDifferent = prevScope != "Entire Device"
+                    startFullDeviceScan(retainExisting = !isDifferent)
                 },
                 onOpenSystemPicker = {
                     showScanFolderPromptDialog = false
@@ -2717,15 +3033,35 @@ fun LibraryScreen() {
             )
         }
 
-        val shown = remember(items, allProcessed, typeFilter, searchQuery, dateFilterMode) {
+        var showAllUncategorized by remember { mutableStateOf(false) }
+        var showNoTextDocs by remember { mutableStateOf(false) }
+
+        fun isNoTextDoc(d: Doc): Boolean {
+            val clean = d.extractedText.replace(Regex("""[^a-zA-Z0-9]"""), "")
+            if (d.status == "True" || d.status == "OK" || d.status == "Error" || d.status == "UNCATEGORIZABLE") {
+                if (clean.length < 5) return true
+                if (d.responseReceived.contains("No readable text", ignoreCase = true)) return true
+            }
+            return false
+        }
+
+        val hasCategorized = items.any { isCategorizedDoc(it) }
+        val uncategorizedCount = items.count { !isCategorizedDoc(it) && it.status != "Duplicate" }
+        val noTextCount = items.count { isNoTextDoc(it) && it.status != "Duplicate" }
+
+        val shown = remember(items, allProcessed, typeFilter, searchQuery, dateFilterMode, showAllUncategorized, showNoTextDocs) {
             val seenShownHashes = mutableSetOf<String>()
             val seenShownTexts = mutableSetOf<String>()
             val seenShownProposals = mutableSetOf<String>()
 
             items.filter { d ->
                 if (d.status == "Duplicate") return@filter false
-                // Requirement 1: When processing is complete for all files, hide uncategorized files from view
-                if (allProcessed && !isCategorizedDoc(d)) return@filter false
+                // Files with no textual contents are hidden by default
+                if (!showNoTextDocs && isNoTextDoc(d)) return@filter false
+
+                // If there are categorized documents and user hasn't toggled showAll, hide uncategorized
+                // If there are NO categorized documents at all, show all non-duplicates so cards are never invisible
+                if (allProcessed && hasCategorized && !showAllUncategorized && !isCategorizedDoc(d)) return@filter false
 
                 // Real-time content & binary duplicate filtering
                 if (d.digest.isNotBlank() && d.digest != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") {
@@ -2815,18 +3151,18 @@ fun LibraryScreen() {
                         )
                         if (!isPickerMode) {
                             Surface(
-                                onClick = { toggleAiProvider() },
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (selectedAiProvider == "gemini") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
                                 modifier = Modifier.height(24.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                    modifier = Modifier.padding(horizontal = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
+                                    val aiName = if (selectedAiProvider == "gemini") "✨ Gemini" else "⚡ Groq"
                                     Text(
-                                        text = if (selectedAiProvider == "gemini") "✨ Gemini" else "⚡ Groq",
+                                        text = "$aiName $quotaDisplayStr",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 11.sp,
@@ -3021,8 +3357,26 @@ fun LibraryScreen() {
                             // Rescan / Refresh icon: Prompts Fresh Scan vs. Merge With EarlierScans
                             IconButton(
                                 onClick = {
-                                    hasNotifiedCompletion = false
-                                    showRescanOptionsDialog = true
+                                    val isGemini = selectedAiProvider.lowercase() == "gemini"
+                                    val isCurrentQuotaExhausted = RateLimiter.isQuotaExhausted(context, selectedAiProvider) || remainingDailyQuota <= 0
+                                    if (isCurrentQuotaExhausted) {
+                                        // Intercept: Do not remove already processed files cards from list.
+                                        // Show popup message for current api until clock finishes.
+                                        if (isGemini) {
+                                            val (h, d) = RateLimiter.getGeminiResetInfo()
+                                            geminiResetHour = h
+                                            geminiResetDate = d
+                                            showGeminiQuotaDialog = true
+                                        } else {
+                                            val (h, d) = RateLimiter.getGroqResetInfo()
+                                            groqResetHour = h
+                                            groqResetDate = d
+                                            showGroqQuotaDialog = true
+                                        }
+                                    } else {
+                                        hasNotifiedCompletion = false
+                                        showRescanOptionsDialog = true
+                                    }
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
@@ -3056,8 +3410,24 @@ fun LibraryScreen() {
                                             isQueuePaused = true
                                             Toast.makeText(context, "Processing paused", Toast.LENGTH_SHORT).show()
                                         } else {
-                                            isQueuePaused = false
-                                            Toast.makeText(context, "Processing resumed", Toast.LENGTH_SHORT).show()
+                                            val isExhausted = RateLimiter.isQuotaExhausted(context, selectedAiProvider) || remainingDailyQuota <= 0
+                                            if (isExhausted) {
+                                                val isGemini = selectedAiProvider.lowercase() == "gemini"
+                                                if (isGemini) {
+                                                    val (h, d) = RateLimiter.getGeminiResetInfo()
+                                                    geminiResetHour = h
+                                                    geminiResetDate = d
+                                                    showGeminiQuotaDialog = true
+                                                } else {
+                                                    val (h, d) = RateLimiter.getGroqResetInfo()
+                                                    groqResetHour = h
+                                                    groqResetDate = d
+                                                    showGroqQuotaDialog = true
+                                                }
+                                            } else {
+                                                isQueuePaused = false
+                                                Toast.makeText(context, "Processing resumed", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     },
                                     modifier = Modifier.size(32.dp)
@@ -3409,14 +3779,26 @@ fun LibraryScreen() {
                                             )
                                         }
                                     }
-                                    Text(
-                                        d.name,
-                                        Modifier.weight(3.2f),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    val rowDisplayName = d.custom.ifBlank { if (d.status == "True" && d.proposed.isNotBlank() && d.proposed != "N/A") d.proposed else d.name }
+                                    Column(Modifier.weight(3.2f)) {
+                                        Text(
+                                            rowDisplayName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (rowDisplayName != d.name) {
+                                            Text(
+                                                "Orig: ${d.name}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 9.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                     val typeText = when (d.type) {
                                         "Word" -> "DOC"
                                         "Excel" -> "XLS"
@@ -3471,24 +3853,66 @@ fun LibraryScreen() {
                     ) {
                         // Select All / Deselect All control
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable {
-                                selectedUris = if (allSelected) emptySet() else shown.map { it.uri }.toSet()
-                            }
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Checkbox(
-                                checked = allSelected,
-                                onCheckedChange = { checkAll ->
-                                    selectedUris = if (checkAll) shown.map { it.uri }.toSet() else emptySet()
-                                },
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = if (allSelected) "Deselect All" else "Select All",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable {
+                                    selectedUris = if (allSelected) emptySet() else shown.map { it.uri }.toSet()
+                                }
+                            ) {
+                                Checkbox(
+                                    checked = allSelected,
+                                    onCheckedChange = { checkAll ->
+                                        selectedUris = if (checkAll) shown.map { it.uri }.toSet() else emptySet()
+                                    },
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (allSelected) "Deselect All" else "Select All",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            if (hasCategorized && uncategorizedCount > 0) {
+                                Spacer(Modifier.width(8.dp))
+                                Surface(
+                                    onClick = { showAllUncategorized = !showAllUncategorized },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (showAllUncategorized) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(1.dp, if (showAllUncategorized) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+                                    modifier = Modifier.height(26.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                                        Text(
+                                            text = if (showAllUncategorized) "Categorized Only" else "Show All (${items.count { it.status != "Duplicate" }})",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (showAllUncategorized) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (noTextCount > 0) {
+                                Spacer(Modifier.width(8.dp))
+                                Surface(
+                                    onClick = { showNoTextDocs = !showNoTextDocs },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (showNoTextDocs) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(1.dp, if (showNoTextDocs) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outlineVariant),
+                                    modifier = Modifier.height(26.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                                        Text(
+                                            text = if (showNoTextDocs) "Hide Empty Text ($noTextCount)" else "Empty Text ($noTextCount)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (showNoTextDocs) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         // Share, Move & Delete Action Buttons
@@ -3586,11 +4010,63 @@ fun LibraryScreen() {
                     contentPadding = PaddingValues(start = 12.dp, top = 6.dp, end = 12.dp, bottom = 80.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    if (shown.isEmpty()) {
+                        item {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text("📄", fontSize = 36.sp)
+                                    Text(
+                                        "No Documents Visible in View",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (uncategorizedCount > 0 && !showAllUncategorized) {
+                                        Text(
+                                            "$uncategorizedCount documents are uncategorized, pending, or had processing errors.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Button(onClick = { showAllUncategorized = true }) {
+                                            Text("Show All Documents ($uncategorizedCount)")
+                                        }
+                                    } else {
+                                        Text(
+                                            "No documents matched the active filter or search query.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        OutlinedButton(onClick = {
+                                            typeFilter = "ALL"
+                                            searchQuery = ""
+                                            showAllUncategorized = true
+                                        }) {
+                                            Text("Reset Filters")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     items(
                         items = shown,
                         key = { it.uri }
                     ) { d ->
-                        val isExpanded = expandedUris.contains(d.uri)
+                        val isExpanded = expandedDocUri == d.uri
 
                         ElevatedCard(
                             modifier = Modifier.fillMaxWidth(),
@@ -3661,9 +4137,48 @@ fun LibraryScreen() {
                                                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                                 )
                                             }
+
+                                            // Status / Category indicator pill (Clickable to toggle expansion)
+                                            val statusBg = when {
+                                                d.status == "True" -> MaterialTheme.colorScheme.primaryContainer
+                                                d.status == "Error" -> MaterialTheme.colorScheme.errorContainer
+                                                d.status == "False" -> MaterialTheme.colorScheme.tertiaryContainer
+                                                else -> MaterialTheme.colorScheme.surfaceVariant
+                                            }
+                                            val statusColor = when {
+                                                d.status == "True" -> MaterialTheme.colorScheme.onPrimaryContainer
+                                                d.status == "Error" -> MaterialTheme.colorScheme.onErrorContainer
+                                                d.status == "False" -> MaterialTheme.colorScheme.onTertiaryContainer
+                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                            val statusLabel = when {
+                                                d.status == "True" -> d.category.ifBlank { "Categorized" }
+                                                d.status == "Error" -> "⚠️ Error"
+                                                d.status == "False" -> "⏳ Pending"
+                                                else -> d.status
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = statusBg,
+                                                modifier = Modifier.clickable {
+                                                    expandedDocUri = if (expandedDocUri == d.uri) null else d.uri
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = statusLabel,
+                                                    color = statusColor,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 9.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
                                         }
+                                        val effectiveName = d.custom.ifBlank { if (d.proposed.isNotBlank() && d.proposed != "N/A") d.proposed else d.name }
                                         Text(
-                                            text = d.name,
+                                            text = effectiveName,
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 textDecoration = TextDecoration.Underline,
                                                 fontWeight = FontWeight.SemiBold
@@ -3681,18 +4196,27 @@ fun LibraryScreen() {
                                                 }
                                             }
                                         )
+                                        if (effectiveName != d.name) {
+                                            Text(
+                                                text = "Original: ${d.name}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
 
-                                    // Dedicated Expand Icon on right side (visible permanently)
+                                    // Dedicated Expand Icon on right side (Accordion toggle)
                                     IconButton(
                                         onClick = {
-                                            expandedUris = if (isExpanded) expandedUris - d.uri else expandedUris + d.uri
+                                            expandedDocUri = if (expandedDocUri == d.uri) null else d.uri
                                         },
                                         modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
                                             painter = painterResource(id = R.drawable.ic_dropdown),
-                                            contentDescription = if (isExpanded) "Collapse reasoning" else "Expand reasoning",
+                                            contentDescription = if (isExpanded) "Collapse details" else "Expand details",
                                             modifier = Modifier
                                                 .size(20.dp)
                                                 .graphicsLayer(rotationZ = if (isExpanded) 180f else 0f),
@@ -3736,9 +4260,9 @@ fun LibraryScreen() {
                                     )
                                 }
 
-                                // Row 3: Expandable 3-Tier Execution & Diagnostic Inspector
+                                // Row 3: Dedicated Payload & Response Inspector
                                 if (isExpanded) {
-                                    ThreeTierDiagnosticView(d)
+                                    ExpandedCardPayloadResponseView(d)
                                 }
                             }
                         }
@@ -3750,367 +4274,115 @@ fun LibraryScreen() {
 }
 
 @Composable
-private fun ThreeTierDiagnosticView(d: Doc) {
-    val isFallback = d.responseReceived.contains("Cloud AI") || d.responseReceived.contains("FALLBACK") || d.responseReceived.contains("fell back")
-    val isCloudSuccess = !isFallback && d.responseReceived.startsWith("{")
-    val isLocalMode = !isFallback && !isCloudSuccess
+private fun ExpandedCardPayloadResponseView(d: Doc) {
+    val targetProvider = when {
+        d.promptSent.contains("\"provider\": \"groq\"", ignoreCase = true) || d.promptSent.contains("Primary AI: GROQ", ignoreCase = true) -> "Groq"
+        d.promptSent.contains("\"provider\": \"gemini\"", ignoreCase = true) || d.promptSent.contains("Primary AI: GEMINI", ignoreCase = true) -> "Google Gemini"
+        d.responseReceived.contains("Groq", ignoreCase = true) -> "Groq"
+        d.responseReceived.contains("Gemini", ignoreCase = true) -> "Google Gemini"
+        else -> "AI Engine"
+    }
+
+    val formattedPayload = remember(d.promptSent) {
+        val trimmed = d.promptSent.trim()
+        try {
+            if (trimmed.startsWith("{")) JSONObject(trimmed).toString(2)
+            else if (trimmed.startsWith("[")) org.json.JSONArray(trimmed).toString(2)
+            else trimmed
+        } catch (_: Exception) {
+            trimmed
+        }
+    }
+
+    val formattedResponse = remember(d.responseReceived) {
+        val trimmed = d.responseReceived.trim()
+        try {
+            if (trimmed.startsWith("{")) JSONObject(trimmed).toString(2)
+            else if (trimmed.startsWith("[")) org.json.JSONArray(trimmed).toString(2)
+            else trimmed
+        } catch (_: Exception) {
+            trimmed
+        }
+    }
+
+    val isErrorResponse = d.status == "Error" ||
+        d.responseReceived.contains("\"error\"", ignoreCase = true) ||
+        d.responseReceived.contains("HTTP 4", ignoreCase = true) ||
+        d.responseReceived.contains("HTTP 5", ignoreCase = true) ||
+        d.responseReceived.contains("Exception", ignoreCase = true)
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 4.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         ),
         shape = RoundedCornerShape(8.dp)
     ) {
-        val cardContext = LocalContext.current
-        val aiPrefs = remember { cardContext.getSharedPreferences("smartdoc_ai_engine", Context.MODE_PRIVATE) }
-        
-        // Dynamically resolve provider from the request/response that actually generated this document
-        val docRequestedProvider = when {
-            d.promptSent.contains("Primary AI: GROQ", ignoreCase = true) -> "groq"
-            d.promptSent.contains("Primary AI: GEMINI", ignoreCase = true) -> "gemini"
-            d.responseReceived.contains("Groq", ignoreCase = true) -> "groq"
-            d.responseReceived.contains("Gemini", ignoreCase = true) -> "gemini"
-            else -> (aiPrefs.getString("primary_provider", "gemini") ?: "gemini").lowercase()
-        }
-        val isDocGroq = docRequestedProvider == "groq"
-
-        val (actualProviderName, actualModelName) = remember(d.responseReceived, isDocGroq) {
-            if (isCloudSuccess) {
-                try {
-                    val obj = JSONObject(d.responseReceived)
-                    val p = obj.optString("provider", "")
-                    val m = obj.optString("model", "")
-                    val provName = obj.optString("provider_name", "")
-                    when {
-                        p.contains("groq", ignoreCase = true) || provName.contains("groq", ignoreCase = true) ->
-                            Pair("Groq", m.ifBlank { "openai/gpt-oss-20b" })
-                        p.contains("gemini", ignoreCase = true) || provName.contains("gemini", ignoreCase = true) ->
-                            Pair("Google Gemini", m.ifBlank { "gemini-3.5-flash-lite" })
-                        isDocGroq -> Pair("Groq", "openai/gpt-oss-20b")
-                        else -> Pair("Google Gemini", "gemini-3.5-flash-lite")
-                    }
-                } catch (_: Exception) {
-                    if (isDocGroq) Pair("Groq", "openai/gpt-oss-20b") else Pair("Google Gemini", "gemini-3.5-flash-lite")
-                }
-            } else if (isFallback) {
-                Pair("Local Indian Taxonomy Engine (Offline Fallback)", "")
-            } else {
-                Pair("Local Indian Taxonomy Engine (On-Device)", "")
-            }
-        }
-
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Header: Title + Status Tag
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            // Block 1: Payload Sent to Gemini/Groq
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "🔍 3-Tier Diagnostic Inspector",
-                    style = MaterialTheme.typography.labelMedium,
+                    text = "📤 Payload Sent to $targetProvider",
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = when {
-                        isFallback -> MaterialTheme.colorScheme.errorContainer
-                        isCloudSuccess -> MaterialTheme.colorScheme.primaryContainer
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    }
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = when {
-                            isFallback -> "⚡ Fallback"
-                            isCloudSuccess -> if (actualProviderName.contains("Groq", ignoreCase = true)) "⚡ Groq Cloud" else "✨ Gemini Cloud"
-                            else -> "📱 Local"
-                        },
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = when {
-                            isFallback -> MaterialTheme.colorScheme.onErrorContainer
-                            isCloudSuccess -> MaterialTheme.colorScheme.onPrimaryContainer
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = formattedPayload.ifBlank { "No payload recorded." },
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp)
+                        )
+                    }
                 }
             }
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-            // -------------------------------------------------------------------------
-            // TIER 1: Phone Request
-            // -------------------------------------------------------------------------
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    "📱 Tier 1: Local Phone Request",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                val reqEndpoint = if (d.promptSent.startsWith("POST")) {
-                    d.promptSent.split("\n").firstOrNull() ?: "POST /v1/classify"
-                } else if (d.promptSent.isNotBlank()) {
-                    d.promptSent.split("\n").firstOrNull() ?: "On-Device Local Heuristic"
-                } else {
-                    "Local Heuristic Engine"
-                }
-                Text(
-                    text = "• Endpoint: $reqEndpoint",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "• Requested Primary AI: ${if (isLocalMode) "Bypassed (Offline Heuristic Mode)" else if (isDocGroq) "Groq (openai/gpt-oss-20b)" else "Google Gemini 3.5 Flash Lite"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "• Auth Token: ${if (isLocalMode) "Bypassed (Offline Mode)" else "Google OIDC Bearer Token Attached"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "• Extracted OCR: ${d.extractedText.length} characters (Google ML Kit)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-            // -------------------------------------------------------------------------
-            // TIER 2: Cloudflare Backend Gateway
-            // -------------------------------------------------------------------------
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    "☁️ Tier 2: Cloudflare Backend Gateway",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                val gatewayStatus = when {
-                    isLocalMode -> "Bypassed (Direct On-Device Execution)"
-                    isCloudSuccess -> "HTTP 200 OK • Rate Limiter: Passed"
-                    d.responseReceived.contains("HTTP 429") || d.responseReceived.contains("quota limit") ->
-                        "HTTP 429 Too Many Requests (Rate limit / Quota reached)"
-                    d.responseReceived.contains("HTTP 502") || d.responseReceived.contains("API_ERROR") ->
-                        "HTTP 502 Bad Gateway (Upstream AI Provider Error)"
-                    d.responseReceived.contains("HTTP 503") ->
-                        "HTTP 503 Service Not Configured"
-                    d.responseReceived.contains("HTTP 401") ->
-                        "HTTP 401 Unauthorized (Google Token Rejected)"
-                    else -> "Gateway Evaluated • Cloud AI status: API_ERROR"
-                }
-                val context = LocalContext.current
-                val dailyUsed = remember(d.modified) { RateLimiter.getDailyCount(context) }
-                Text(
-                    text = "• Gateway Status: $gatewayStatus",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "• Client Throttling: Max 10 req/60s (Active) • Daily Used: $dailyUsed / 1000",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (dailyUsed >= 1000) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                val routingText = if (isDocGroq) {
-                    "• Provider Routing: Groq (openai/gpt-oss-20b) ➔ Failover (Google Gemini)"
-                } else {
-                    "• Provider Routing: Google Gemini 3.5 Flash Lite ➔ Failover (Groq)"
-                }
-                Text(
-                    text = routingText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-            // -------------------------------------------------------------------------
-            // TIER 3: AI Model Execution & Root Cause Failure Diagnostic
-            // -------------------------------------------------------------------------
+            // Block 2: Response Received from Gemini/Groq
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "🤖 Tier 3: AI Execution & Root Cause Diagnostic",
+                    text = if (isErrorResponse) "📥 Response / Error from $targetProvider" else "📥 Response Received from $targetProvider",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (isErrorResponse) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
-
-                if (isCloudSuccess) {
-                    var specificsText = ""
-                    try {
-                        val obj = JSONObject(d.responseReceived)
-                        specificsText = obj.optString("specifics")
-                    } catch (_: Exception) {}
-
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                "✅ Cloud Model: $actualProviderName ($actualModelName)",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            if (specificsText.isNotBlank()) {
-                                Text(
-                                    "Reasoning: $specificsText",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                } else if (isFallback) {
-                    // Cloud AI FAILED: Show exact failure root cause + local fallback
-                    val diagTitle = if (isDocGroq) "🔴 Groq Failure Diagnostic (Root Cause):" else "🔴 Gemini Failure Diagnostic (Root Cause):"
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                diagTitle,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            val parts = d.responseReceived.split("\n\n[ON-DEVICE FALLBACK RESULT]\n")
-                            val cloudErrorPart = parts.firstOrNull() ?: d.responseReceived
-                            Text(
-                                text = cloudErrorPart,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                "🟢 Local Heuristic Fallback Result:",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            val parts = d.responseReceived.split("\n\n[ON-DEVICE FALLBACK RESULT]\n")
-                            val localPart = if (parts.size > 1) parts[1] else "Evaluated on-device OCR content metadata."
-                            Text(
-                                text = localPart,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        }
-                    }
-                } else {
-                    // Pure Local Mode
-                    Text(
-                        "• Mode: Pure On-Device Heuristic (Filename excluded)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        d.responseReceived.ifBlank { "Categorized based on matched document identifiers." },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-            // Metadata summary row (Category & Dimensions)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Category: ${d.category.ifBlank { "N/A" }}",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                if (d.dimensions.isNotBlank()) {
-                    val dimLabel = if (d.dimensions.contains("Document")) d.dimensions else "Dimensions: ${d.dimensions}"
-                    Text(
-                        text = dimLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (d.metadata.isNotBlank()) {
-                val parsedEntities = remember(d.metadata) {
-                    val entries = mutableListOf<Pair<String, String>>()
-                    try {
-                        val obj = JSONObject(d.metadata)
-                        val keys = obj.keys()
-                        while (keys.hasNext()) {
-                            val k = keys.next()
-                            val v = obj.optString(k, "").trim()
-                            if (v.isNotBlank()) {
-                                val label = k.replace("_", " ").split(" ")
-                                    .joinToString(" ") { part -> part.replaceFirstChar { c -> c.uppercase() } }
-                                entries.add(Pair(label, v))
-                            }
-                        }
-                    } catch (_: Exception) {}
-                    entries
-                }
-                if (parsedEntities.isNotEmpty()) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (isErrorResponse) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    SelectionContainer {
                         Text(
-                            text = "🏷️ Discovered Metadata & Key Entities:",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
+                            text = formattedResponse.ifBlank { "No response recorded." },
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            ),
+                            color = if (isErrorResponse) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp)
                         )
-                        for ((lbl, valStr) in parsedEntities) {
-                            Text(
-                                text = "• $lbl: $valStr",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
-                }
-            }
-
-            if (d.extractedText.isNotBlank()) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = "Extracted Text Snippet:",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = d.extractedText.take(250),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }

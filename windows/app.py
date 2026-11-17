@@ -378,50 +378,98 @@ if 'cf_keepalive_worker_running' not in st.session_state:
 
 st.divider()
 
-# Runtime Primary AI Engine Selection (Gemini vs. Groq)
+# Primary AI Engine (Default is always Google Gemini; no UI engine selector)
 if 'ai_provider' not in st.session_state:
     st.session_state.ai_provider = 'gemini'
 
-ai_col1, ai_col2 = st.columns([1.5, 3.5], vertical_alignment="center")
-with ai_col1:
-    selected_engine = st.radio(
-        "**Primary AI Engine**:",
-        options=["✨ Google Gemini", "⚡ Groq"],
-        index=0 if st.session_state.ai_provider == 'gemini' else 1,
-        horizontal=True,
-        help="Select primary engine for AI classification. Automatic failover switches to the other engine if quota or rate limit is reached."
-    )
-    new_provider = 'gemini' if "Gemini" in selected_engine else 'groq'
-    if new_provider != st.session_state.ai_provider:
-        st.session_state.ai_provider = new_provider
+from smartdoc.hosted import (
+    get_remaining_daily_quota, get_gemini_day_key, get_groq_day_key,
+    reset_provider_count, format_quota_display, get_gemini_reset_epoch, get_groq_reset_epoch,
+    is_quota_exhausted, get_gemini_reset_info, get_groq_reset_info
+)
+
+# Startup / Active session sync: Check if previous quota exhaustion has passed reset clock
+if 'gemini_exhausted' not in st.session_state:
+    st.session_state.gemini_exhausted = False
+if 'groq_exhausted' not in st.session_state:
+    st.session_state.groq_exhausted = False
+if 'show_restored_msg' not in st.session_state:
+    st.session_state.show_restored_msg = None
+
+cur_gemini_day = get_gemini_day_key()
+cur_groq_day = get_groq_day_key()
+
+if st.session_state.get('gemini_exhausted'):
+    if st.session_state.get('gemini_exhausted_day') != cur_gemini_day:
+        st.session_state.gemini_exhausted = False
+        st.session_state.gemini_declined = False
+        st.session_state.quota_exhausted = False
+        st.session_state.ai_provider = 'gemini'
+        reset_provider_count('gemini')
+        st.session_state.show_restored_msg = "Google Gemini quota has been restored! Daily limit is reset to 1500 requests."
+elif st.session_state.get('gemini_declined') and st.session_state.get('gemini_declined_day') != cur_gemini_day:
+    st.session_state.gemini_declined = False
+    st.session_state.quota_exhausted = False
+    st.session_state.ai_provider = 'gemini'
+    reset_provider_count('gemini')
+    st.session_state.show_restored_msg = "Google Gemini quota has been restored! Daily limit is reset to 1500 requests."
+
+if st.session_state.get('groq_exhausted'):
+    if st.session_state.get('groq_exhausted_day') != cur_groq_day:
+        st.session_state.groq_exhausted = False
+        st.session_state.groq_acknowledged = False
+        reset_provider_count('groq')
+        st.session_state.show_restored_msg = "Groq quota has been restored! Limit has been reset."
+
+quota_fmt = format_quota_display(st.session_state.ai_provider)
+prov_title = "✨ Google Gemini" if st.session_state.ai_provider == 'gemini' else "⚡ Groq"
+st.caption(f"🤖 **Active AI Engine:** **{prov_title}** {quota_fmt}")
+
+@st.dialog("Quota Restored")
+def show_quota_restored_dialog(msg: str):
+    st.success(f"🎉 {msg}")
+    if st.button("OK", type="primary", use_container_width=True, key="dlg_quota_restored_ok"):
+        st.session_state.show_restored_msg = None
         st.rerun()
 
-with ai_col2:
-    if st.session_state.ai_provider == 'gemini':
-        st.caption("🟢 **Google Gemini** is active as Primary API (Groq will act as automatic fallback if Gemini quota is reached).")
-    else:
-        st.caption("⚡ **Groq** is active as Primary API (Google Gemini will act as automatic fallback if Groq quota is reached).")
+if st.session_state.get('show_restored_msg'):
+    show_quota_restored_dialog(st.session_state.show_restored_msg)
 
-# Optional Direct Gemini API Key Configuration (In-page expander; no sidebar)
-with st.expander("🔑 Direct Google Gemini API Key (Optional)", expanded=False):
-    env_gemini = os.environ.get('GEMINI_API_KEY', '')
-    if 'gemini_api_key' not in st.session_state:
-        st.session_state.gemini_api_key = env_gemini
-    user_gemini_input = st.text_input(
-        "Gemini API Key",
-        value=st.session_state.gemini_api_key,
-        type="password",
-        placeholder="AIzaSy...",
-        help="Optional: Paste your Google Gemini API key to query Gemini directly without depending on Cloudflare proxy."
-    )
-    if user_gemini_input != st.session_state.gemini_api_key:
-        st.session_state.gemini_api_key = user_gemini_input
-        os.environ['GEMINI_API_KEY'] = user_gemini_input
-        st.success("✅ Gemini Key updated!")
-    if st.session_state.gemini_api_key:
-        st.success("🟢 Direct Gemini API active")
-    else:
-        st.info("ℹ️ Using Hosted Cloudflare Proxy (or offline rules)")
+@st.dialog("Gemini Quota Notice")
+def show_gemini_quota_dialog(hour: str, date_str: str):
+    st.warning(f"Gemini quota is completely utilized! It will be reset at {hour} hours on {date_str} date. Do you want me to proceed with Groq?")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes", type="primary", use_container_width=True, key="dlg_gemini_yes"):
+        gemini_queue.clear_quota_event()
+        st.session_state.ai_provider = 'groq'
+        st.session_state.gemini_declined = False
+        st.session_state.quota_exhausted = False
+        if is_quota_exhausted('groq') or st.session_state.get('groq_exhausted'):
+            gh, gd = get_groq_reset_info()
+            st.session_state.show_groq_quota_popup = (gh, gd)
+            st.session_state.run_queue = False
+        else:
+            st.session_state.run_queue = True
+        st.rerun()
+    if c2.button("No", type="secondary", use_container_width=True, key="dlg_gemini_no"):
+        gemini_queue.clear_quota_event()
+        st.session_state.gemini_declined = True
+        st.session_state.gemini_declined_day = get_gemini_day_key()
+        st.rerun()
+
+@st.dialog("Groq Quota Notice")
+def show_groq_quota_dialog(hour: str, date_str: str):
+    st.warning(f"Groq quota is completely utilized! It will be reset at {hour} hours on {date_str} date.")
+    if st.button("OK", type="primary", use_container_width=True, key="dlg_groq_ok"):
+        gemini_queue.clear_quota_event()
+        st.session_state.ai_provider = 'gemini'
+        st.session_state.groq_acknowledged = True
+        st.session_state.run_queue = False
+        st.rerun()
+
+if st.session_state.get('show_groq_quota_popup'):
+    gh, gd = st.session_state.pop('show_groq_quota_popup')
+    show_groq_quota_dialog(gh, gd)
 
 conn = connect(None)
 
@@ -668,20 +716,28 @@ if sel_col1.button('📂 Browse Folder', type='primary', use_container_width=Tru
     chosen = choose_folder()
     if chosen and Path(chosen).is_dir():
         resolved_path = str(Path(chosen).resolve())
+        is_diff = (st.session_state.root != resolved_path)
         st.session_state.root = resolved_path
         st.session_state.folder_path_input = resolved_path
         st.session_state.quota_exhausted = False
         st.session_state.run_queue = True
+        if is_diff:
+            scan(conn, resolved_path, retain=False)
+            st.session_state.scan_scope = resolved_path
         st.rerun()
 
 if sel_col2.button('📄 Select File', type='secondary', use_container_width=True, disabled=is_any_processing, help="Operation locked: a document is currently processing" if is_any_processing else None):
     chosen_file = choose_file()
     if chosen_file and Path(chosen_file).is_file():
         resolved_path = str(Path(chosen_file).resolve())
+        is_diff = (st.session_state.root != resolved_path)
         st.session_state.root = resolved_path
         st.session_state.folder_path_input = resolved_path
         st.session_state.quota_exhausted = False
         st.session_state.run_queue = True
+        if is_diff:
+            scan(conn, resolved_path, retain=False)
+            st.session_state.scan_scope = resolved_path
         st.rerun()
 
 def _on_target_input_change():
@@ -722,10 +778,28 @@ if st.session_state.scan_scope != str(Path(root).resolve()):
     st.session_state.run_queue = True
     st.session_state.quota_exhausted = False
 
+all_records = rows(conn, root)
+
 # Rescan Controls (Preserve vs Overwrite Dialog)
 rescan_col1, rescan_col2 = st.columns([1, 4])
+is_cur_exhausted = (
+    is_quota_exhausted(st.session_state.ai_provider) or
+    (st.session_state.ai_provider == 'gemini' and (st.session_state.get('gemini_declined') or st.session_state.get('gemini_exhausted'))) or
+    (st.session_state.ai_provider == 'groq' and (st.session_state.get('groq_acknowledged') or st.session_state.get('groq_exhausted'))) or
+    get_remaining_daily_quota(st.session_state.ai_provider) <= 0
+)
+
 if rescan_col1.button('🔄 Scan Again', key='rescan_again_btn', disabled=is_any_processing, help="Operation locked: a document is currently processing" if is_any_processing else None):
-    st.session_state.ask_rescan = True
+    if is_cur_exhausted:
+        from smartdoc.hosted import get_gemini_reset_info, get_groq_reset_info
+        if st.session_state.ai_provider == 'gemini':
+            gh, gd = get_gemini_reset_info()
+            show_gemini_quota_dialog(gh, gd)
+        else:
+            gh, gd = get_groq_reset_info()
+            show_groq_quota_dialog(gh, gd)
+    else:
+        st.session_state.ask_rescan = True
 
 if st.session_state.get('ask_rescan'):
     target_type = "File" if (target_path and target_path.is_file()) else "Folder"
@@ -737,7 +811,8 @@ if st.session_state.get('ask_rescan'):
     )
     b1, b2 = st.columns([1, 4])
     if b1.button('Confirm Rescan', type='primary'):
-        is_retain = choice.startswith('Preserve')
+        has_pending = any(r.get('status') != 'done' and r.get('status') != 'skipped' for r in all_records)
+        is_retain = True if has_pending else choice.startswith('Preserve')
         scan(conn, root, retain=is_retain)
         st.session_state.ask_rescan = False
         st.session_state.run_queue = True
@@ -746,8 +821,6 @@ if st.session_state.get('ask_rescan'):
     if b2.button('Cancel'):
         st.session_state.ask_rescan = False
         st.rerun()
-
-all_records = rows(conn, root)
 
 # Ensure processed records have standard virtual name consistent with Android app and metadata indexed
 for r in all_records:
@@ -821,7 +894,11 @@ stat2.metric('Processed Documents', len([r for r in records if r['status'] == 'd
 stat3.metric('Pending Analysis', len(pending))
 
 # Prominent Quota Exhaustion Alert
-if st.session_state.quota_exhausted:
+if st.session_state.get('gemini_declined'):
+    st.warning("⚠️ **Gemini daily quota exhausted.** Processing paused by user (Groq fallback declined). Pending documents will be reprocessed once quota resets.")
+elif st.session_state.get('groq_acknowledged'):
+    st.warning("⚠️ **Groq daily quota exhausted.** Processing paused. Pending documents will be reprocessed once quota resets.")
+elif st.session_state.quota_exhausted:
     st.error("⚠️ **All services have surpassed their free quota. Please try after some time.**")
     st.info("The application automatically halted processing to avoid quota violations. Both Gemini and Groq free tiers will reset periodically.")
 
@@ -875,16 +952,26 @@ if suggestions:
             use_container_width=True
         )
 
-# Row 2: Category, Type, Date, and Duplicates Filters
+# Row 2: Category, Type, Date, Duplicates, and Empty Text Filters
 all_cats = ['All categories'] + sorted({r['category'] for r in records if r.get('category')})
 all_types = ['All types'] + sorted({r['kind'] for r in records if r.get('kind')})
 date_presets = ['All dates', 'Since Today', 'Since Yesterday', 'Since A Week', 'Since A Month', 'Since Last 3 Months', 'Since Last 6 Months', 'Since Last 1 Year', 'Older than 1 Year']
 
-f_col1, f_col2, f_col3, f_col4 = st.columns([1.8, 1.4, 1.6, 1.2], vertical_alignment="center")
+if 'show_no_text' not in st.session_state:
+    st.session_state.show_no_text = False
+
+f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns([1.8, 1.3, 1.5, 0.9, 0.9], vertical_alignment="center")
 sel_category = f_col1.selectbox('Filter by Category', all_cats)
 sel_type = f_col2.selectbox('Filter by Type', all_types)
 sel_date = f_col3.selectbox('Filter by Date', date_presets)
 st.session_state.show_duplicates = f_col4.checkbox('Duplicates', value=st.session_state.show_duplicates)
+st.session_state.show_no_text = f_col5.checkbox('Empty Text', value=st.session_state.show_no_text, help='Show files with no textual content (hidden by default)')
+
+def is_no_text_record(r):
+    spec = str(r.get('specifics', '')).lower()
+    if 'no readable text' in spec or 'no text content' in spec or 'dropped from cloud requests' in spec:
+        return True
+    return False
 
 filtered_records = [
     r for r in records 
@@ -892,6 +979,7 @@ filtered_records = [
     and (sel_type == 'All types' or r.get('kind') == sel_type)
     and date_match(r['mtime_ns'], sel_date)
     and matches_query(r, st.session_state.search_query)
+    and (st.session_state.show_no_text or not is_no_text_record(r))
 ]
 
 if st.session_state.search_query:
@@ -1076,10 +1164,10 @@ for r in filtered_records:
                 requested_model = 'openai/gpt-oss-20b'
             elif 'gemini' in prompt_str or 'gemini' in cloud_error.lower():
                 requested_prov = 'Google Gemini'
-                requested_model = 'gemini-3.5-flash-lite'
+                requested_model = 'gemini-2.0-flash'
             else:
                 requested_prov = 'Groq' if st.session_state.get('ai_provider') == 'groq' else 'Google Gemini'
-                requested_model = 'openai/gpt-oss-20b' if requested_prov == 'Groq' else 'gemini-3.5-flash-lite'
+                requested_model = 'openai/gpt-oss-20b' if requested_prov == 'Groq' else 'gemini-2.0-flash'
 
             # What provider actually generated the response?
             rec = details.get('data_received', {})
@@ -1317,6 +1405,10 @@ if action_c2.button('🔄 Re-analyze All Documents', type='secondary', use_conta
     conn.commit()
     st.session_state.processing_file = ''
     st.session_state.quota_exhausted = False
+    st.session_state.gemini_declined = False
+    st.session_state.groq_acknowledged = False
+    st.session_state.ai_provider = 'gemini'
+    gemini_queue.clear_quota_event()
     st.rerun()
 
 # ==========================================================
@@ -1324,6 +1416,22 @@ if action_c2.button('🔄 Re-analyze All Documents', type='secondary', use_conta
 # ==========================================================
 gemini_queue = SequentialGeminiQueue.get_instance()
 currently_processing = gemini_queue.get_current_processing()
+quota_ev = gemini_queue.get_quota_event()
+
+if quota_ev:
+    q_prov = quota_ev.get('provider', 'gemini')
+    q_hour = quota_ev.get('reset_hour', '')
+    q_date = quota_ev.get('reset_date', '')
+    if q_prov == 'gemini':
+        st.session_state.gemini_exhausted = True
+        st.session_state.gemini_exhausted_day = get_gemini_day_key()
+        if not st.session_state.get('gemini_declined'):
+            show_gemini_quota_dialog(q_hour, q_date)
+    elif q_prov == 'groq':
+        st.session_state.groq_exhausted = True
+        st.session_state.groq_exhausted_day = get_groq_day_key()
+        if not st.session_state.get('groq_acknowledged'):
+            show_groq_quota_dialog(q_hour, q_date)
 
 if currently_processing:
     st.session_state.processing_file = currently_processing
@@ -1333,26 +1441,33 @@ elif st.session_state.get('processing_file'):
     # Queue completed the active job. Reset state and refresh once so the UI immediately shows '✅ True'
     st.session_state.processing_file = ''
     st.rerun()
-elif pending and not st.session_state.quota_exhausted:
-    target_record = pending[0]
-    target_path = Path(target_record['path'])
-    st.session_state.processing_file = str(target_path)
-    
-    # Callback invoked in worker thread upon step completion or failure
-    def step_completed_callback(path_done, res, err):
-        pass
+elif pending and not quota_ev and not st.session_state.get('gemini_declined') and not st.session_state.get('groq_acknowledged') and not st.session_state.quota_exhausted:
+    failed_paths = gemini_queue.get_failed_paths()
+    eligible_pending = [r for r in pending if r['path'] not in failed_paths]
+    if not eligible_pending:
+        st.session_state.processing_file = ''
+    else:
+        target_record = eligible_pending[0]
+        target_path = Path(target_record['path'])
+        st.session_state.processing_file = str(target_path)
         
-    submitted = gemini_queue.submit_task(
-        str(target_path),
-        endpoint=endpoint,
-        token=token,
-        gemini_api_key=st.session_state.get('gemini_api_key') or os.environ.get('GEMINI_API_KEY'),
-        on_complete=step_completed_callback,
-        preferred_provider=st.session_state.get('ai_provider', 'gemini')
-    )
-    if submitted:
-        time.sleep(0.2)
-        st.rerun()
+        # Callback invoked in worker thread upon step completion or failure
+        def step_completed_callback(path_done, res, err):
+            pass
+            
+        submitted = gemini_queue.submit_task(
+            str(target_path),
+            endpoint=endpoint,
+            token=token,
+            gemini_api_key=st.session_state.get('gemini_api_key') or os.environ.get('GEMINI_API_KEY'),
+            on_complete=step_completed_callback,
+            preferred_provider=st.session_state.get('ai_provider', 'gemini')
+        )
+        if submitted:
+            time.sleep(0.2)
+            st.rerun()
+        else:
+            st.session_state.processing_file = ''
 else:
     st.session_state.processing_file = ''
 

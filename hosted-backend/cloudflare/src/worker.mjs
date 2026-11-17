@@ -364,10 +364,12 @@ function parseModelJson(raw) {
 async function gemini(payload, env) {
   const candidateModels = [
     env.GEMINI_MODEL,
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-8b',
+    'gemini-2.5-flash',
     'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-    'gemini-3.8-flash',
-    'gemini-3.5-flash',
     'gemini-flash-latest'
   ].filter(Boolean);
 
@@ -458,9 +460,8 @@ async function groq(payload, env) {
 
   const candidateModels = [
     env.GROQ_MODEL,
-    'openai/gpt-oss-20b',
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant'
+    'llama-3.1-8b-instant',
+    'llama-3.3-70b-versatile'
   ].filter(Boolean);
 
   let lastError = null;
@@ -527,7 +528,7 @@ async function groq(payload, env) {
 // Validate Google-issued OIDC ID tokens server-side.
 async function authenticate(request, env) {
   const auth = request.headers.get('authorization') || '';
-  if (!auth.startsWith('Bearer ')) return null;
+  if (!auth.startsWith('Bearer ')) return { id: null, reason: 'MISSING_BEARER_AUTH', message: 'Authorization header must start with Bearer' };
   const token = auth.slice(7);
   // Optional migration for existing private clients; disable for public deployment.
   const legacyToken = env.SMARTDOC_CLIENT_TOKEN || env.BACKEND_ACCESS_TOKEN;
@@ -535,36 +536,49 @@ async function authenticate(request, env) {
     return { id: 'legacy' };
   }
   const defaultClientIds = '492541392963-up746ino0bjdhufq32g1cnq2tqqbqs8o.apps.googleusercontent.com,492541392963-b0mf650fohoas9m6a24fa32enrstjrr6.apps.googleusercontent.com';
-  const allowedClientIds = (env.GOOGLE_CLIENT_IDS || env.GOOGLE_DESKTOP_CLIENT_ID || defaultClientIds)
-    .split(',')
-    .map(x => x.trim())
-    .filter(Boolean);
-  if (!allowedClientIds.length) return null;
+  const rawAllowed = [
+    env.GOOGLE_CLIENT_IDS,
+    env.GOOGLE_DESKTOP_CLIENT_ID,
+    env.GOOGLE_WEB_CLIENT_ID,
+    defaultClientIds
+  ].filter(Boolean).join(',');
+  const allowedClientIds = rawAllowed.split(',').map(x => x.trim()).filter(Boolean);
+  if (!allowedClientIds.length) return { id: null, reason: 'NO_ALLOWED_CLIENTS', message: 'No Google client IDs configured' };
   let response;
   try {
     response = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(token), {
       signal: AbortSignal.timeout(8000)
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      let errText = '';
+      try { errText = await response.text(); } catch {}
+      return { id: null, reason: 'GOOGLE_TOKEN_REJECTED', message: `Google oauth2 tokeninfo failed (HTTP ${response.status}): ${errText}` };
+    }
     const info = await response.json();
     const tokenAud = String(info.aud || '').trim();
     const tokenAzp = String(info.azp || '').trim();
-    if (
-      (!allowedClientIds.includes(tokenAud) && !allowedClientIds.includes(tokenAzp)) ||
-      !['accounts.google.com', 'https://accounts.google.com'].includes(info.iss) ||
-      Number(info.exp) <= Math.floor(Date.now() / 1000) ||
-      !info.sub ||
-      String(info.email_verified).toLowerCase() !== 'true'
-    ) {
-      return null;
+    if (!allowedClientIds.includes(tokenAud) && !allowedClientIds.includes(tokenAzp)) {
+      return { id: null, reason: 'AUDIENCE_MISMATCH', message: `Token aud '${tokenAud}' or azp '${tokenAzp}' does not match allowed client IDs` };
+    }
+    if (!['accounts.google.com', 'https://accounts.google.com'].includes(info.iss)) {
+      return { id: null, reason: 'INVALID_ISSUER', message: `Invalid issuer: ${info.iss}` };
+    }
+    if (Number(info.exp) <= Math.floor(Date.now() / 1000)) {
+      return { id: null, reason: 'TOKEN_EXPIRED', message: `Token expired at ${info.exp} (current: ${Math.floor(Date.now() / 1000)})` };
+    }
+    if (!info.sub) {
+      return { id: null, reason: 'MISSING_SUB', message: 'Token missing subject (sub)' };
+    }
+    if (String(info.email_verified).toLowerCase() !== 'true') {
+      return { id: null, reason: 'EMAIL_NOT_VERIFIED', message: 'Google email is not verified' };
     }
     const emails = (env.ALLOWED_GOOGLE_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
     if (emails.length > 0 && !emails.includes('*') && !emails.includes(String(info.email || '').toLowerCase())) {
-      return null;
+      return { id: null, reason: 'EMAIL_NOT_ALLOWED', message: `Email '${info.email}' is not in allowed list` };
     }
     return { id: info.sub };
-  } catch {
-    return null;
+  } catch (e) {
+    return { id: null, reason: 'NETWORK_EXCEPTION', message: e?.message || 'Error verifying token with Google' };
   }
 }
 
@@ -604,7 +618,13 @@ export async function handle(request, env) {
   if (!env.GEMINI_API_KEY && !env.GROQ_API_KEY) return json({ error: 'Service not configured' }, 503);
 
   const principal = await authenticate(request, env);
-  if (!principal) return json({ error: 'Unauthorized' }, 401);
+  if (!principal || !principal.id) {
+    return json({
+      error: 'Unauthorized',
+      reason: principal?.reason || 'AUTH_FAILED',
+      message: principal?.message || 'Unauthorized'
+    }, 401);
+  }
 
   if (env.CLASSIFY_LIMITER) {
     const allowed = await env.CLASSIFY_LIMITER.limit({ key: principal.id });
@@ -633,27 +653,28 @@ export async function handle(request, env) {
     return json({ error: 'text must be 1-4000000 characters' }, 422);
   }
 
-  // Runtime provider selection: 'gemini' or 'groq' from request payload or X-Provider header
+  // Runtime provider selection: 'gemini' (default) or 'groq' from request payload or X-Provider header
   const chosenProvider = (payload.provider || payload.preferred_provider || request.headers.get('x-provider') || '').toLowerCase().trim();
   let providers;
   if (chosenProvider === 'groq') {
     providers = [
-      ...(env.GROQ_API_KEY && hasText ? [['groq', groq]] : []),
-      ...(env.GEMINI_API_KEY ? [['gemini', gemini]] : [])
+      ...(env.GROQ_API_KEY && hasText ? [['groq', groq]] : [])
     ];
   } else if (chosenProvider === 'gemini') {
     providers = [
-      ...(env.GEMINI_API_KEY ? [['gemini', gemini]] : []),
-      ...(env.GROQ_API_KEY && hasText ? [['groq', groq]] : [])
+      ...(env.GEMINI_API_KEY ? [['gemini', gemini]] : [])
     ];
   } else {
-    // Default fallback order if not explicitly chosen by client
-    const useOnlyGroq = env.USE_GROQ_ONLY !== 'false';
-    providers = [
-      ...((!useOnlyGroq && env.GEMINI_API_KEY) ? [['gemini', gemini]] : []),
-      ...(env.GROQ_API_KEY && hasText ? [['groq', groq]] : []),
-      ...((useOnlyGroq && !env.GROQ_API_KEY && env.GEMINI_API_KEY) ? [['gemini', gemini]] : [])
-    ];
+    // Default: Gemini is always default unless explicitly set to groq
+    const useOnlyGroq = env.USE_GROQ_ONLY === 'true';
+    if (useOnlyGroq && env.GROQ_API_KEY && hasText) {
+      providers = [['groq', groq]];
+    } else {
+      providers = [
+        ...(env.GEMINI_API_KEY ? [['gemini', gemini]] : []),
+        ...(env.GROQ_API_KEY && hasText ? [['groq', groq]] : [])
+      ];
+    }
   }
 
   let last = null;
@@ -679,9 +700,9 @@ export async function handle(request, env) {
         suggested_name: proposed,
         proposed_name: proposed,
         metadata: (r.metadata && typeof r.metadata === 'object') ? r.metadata : {},
-        provider: name === 'gemini' ? (outcome.model || env.GEMINI_MODEL || 'gemini-3.5-flash-lite') : name,
+        provider: name === 'gemini' ? (outcome.model || env.GEMINI_MODEL || 'gemini-2.0-flash') : name,
         provider_name: name === 'gemini' ? 'Google Gemini' : 'Groq',
-        model: outcome.model || (name === 'gemini' ? (env.GEMINI_MODEL || 'gemini-3.5-flash-lite') : (env.GROQ_MODEL || 'openai/gpt-oss-20b')),
+        model: outcome.model || (name === 'gemini' ? (env.GEMINI_MODEL || 'gemini-2.0-flash') : (env.GROQ_MODEL || 'llama-3.1-8b-instant')),
         prompt: {
           system_instruction: classifyPrompt(),
           prompt_question: USER_PROMPT_QUESTION,

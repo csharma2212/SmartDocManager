@@ -96,10 +96,60 @@ def test_extract_text_safe_pdf_closing():
     assert isinstance(text, str)
 
 def test_client_rate_limiter_daily_limit():
-    from smartdoc.hosted import _rate_limiter, DAILY_LIMIT_MESSAGE
+    from smartdoc.hosted import _rate_limiter
     _rate_limiter.reset_for_testing()
-    _rate_limiter.day_count = 1000
+    _rate_limiter.day_count = _rate_limiter.max_per_day
     res = classify_hosted('test.png', sample(), 'https://example.org', 'token', ocr=lambda img: 'Form 16')
     assert res['Status'] == 'QUOTA_EXHAUSTED'
-    assert res['Specifics'] == DAILY_LIMIT_MESSAGE
+    assert 'quota is completely utilized' in res['Specifics']
+    assert res['ResetHour'] != '' and res['ResetDate'] != ''
+    _rate_limiter.reset_for_testing()
+
+def test_reset_provider_count():
+    from smartdoc.hosted import _rate_limiter, reset_provider_count, get_remaining_daily_quota
+    _rate_limiter.reset_for_testing()
+    _rate_limiter.groq_count = 500
+    assert get_remaining_daily_quota('groq') == 1000
+    reset_provider_count('groq')
+    assert get_remaining_daily_quota('groq') == 1500
+    _rate_limiter.reset_for_testing()
+
+def test_format_quota_display():
+    from smartdoc.hosted import _rate_limiter, format_quota_display
+    _rate_limiter.reset_for_testing()
+    _rate_limiter.gemini_count = 25
+    assert format_quota_display('gemini') == "(25/1500)"
+    _rate_limiter.groq_count = 1
+    assert format_quota_display('groq') == "(1/~1500)"
+    _rate_limiter.reset_for_testing()
+
+def test_apply_post_request_delay():
+    import time
+    from smartdoc.hosted import apply_post_request_delay
+    t0 = time.time()
+    apply_post_request_delay('gemini', 0.1)
+    # Gemini has no delay
+    assert time.time() - t0 < 0.1
+    # Groq with elapsed >= 2.0 has no delay
+    t0 = time.time()
+    apply_post_request_delay('groq', 2.1)
+    assert time.time() - t0 < 0.1
+
+def test_quota_exhaustion_tracking():
+    from smartdoc.hosted import (
+        _rate_limiter, mark_quota_exhausted, is_quota_exhausted,
+        get_remaining_daily_quota, check_and_clear_quota_restored
+    )
+    _rate_limiter.reset_for_testing()
+    assert not is_quota_exhausted('groq')
+    assert get_remaining_daily_quota('groq') == 1500
+
+    mark_quota_exhausted('groq')
+    assert is_quota_exhausted('groq')
+    assert get_remaining_daily_quota('groq') == 0
+
+    ok, msg = _rate_limiter.check_daily_limit('groq')
+    assert not ok
+    assert '1500 request per day limit' in msg
+
     _rate_limiter.reset_for_testing()

@@ -34,16 +34,28 @@ test('Gemini quota failure falls back to Groq',async()=>{
    assert.equal(called.length,2);
  }finally{globalThis.fetch=original;}
 });
-test('by default USE_GROQ_ONLY routes directly to Groq without calling Gemini',async()=>{
+test('when USE_GROQ_ONLY=true routes directly to Groq without calling Gemini',async()=>{
  const original=globalThis.fetch;const called=[];
  globalThis.fetch=async(url)=>{called.push(String(url));return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({category:'Bank Statement',specifics:'Bank period',suggested_name:'HDFC_Oct26'})}}]}),{status:200});};
  try{
-   const res=await handle(request(),{...env,GEMINI_API_KEY:'fake-gemini'});
+   const res=await handle(request(),{...env,GEMINI_API_KEY:'fake-gemini',USE_GROQ_ONLY:'true'});
    assert.equal(res.status,200);
    const body=await res.json();
    assert.equal(body.provider,'groq');
    assert.equal(called.length,1);
    assert.ok(!called[0].includes('generativelanguage'));
+ }finally{globalThis.fetch=original;}
+});
+
+test('provider gemini on quota exhaustion returns 429 without silent fallback',async()=>{
+ const original=globalThis.fetch;const called=[];
+ globalThis.fetch=async(url)=>{called.push(String(url));return new Response('{}',{status:429,headers:{'retry-after':'3600'}});};
+ const geminiReq=new Request('https://example.workers.dev/v1/classify',{method:'POST',headers:{authorization:'Bearer test-secret','content-type':'application/json'},body:JSON.stringify({text:'Lab report',provider:'gemini'})});
+ try{
+   const res=await handle(geminiReq,{...env,GEMINI_API_KEY:'fake-gemini',GROQ_API_KEY:'fake-groq'});
+   assert.equal(res.status,429);
+   const body=await res.json();
+   assert.equal(body.provider,'gemini');
  }finally{globalThis.fetch=original;}
 });
 test('Both providers exhausted returns 429',async()=>{

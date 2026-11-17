@@ -21,24 +21,160 @@ SYSTEM_PROMPT_TEMPLATE = (
     "- specifics: Why you think it belongs to the category which you have suggested (clear reasoning/evidence from the document)"
 )
 
-DAILY_LIMIT_MESSAGE = "1000 request per day limit is reached. To process further continue after 24 hours."
+DAILY_LIMIT_MESSAGE = "1500 request per day limit is reached. To process further continue after 24 hours."
+
+def get_gemini_reset_info() -> tuple[str, str]:
+    """Returns (<HH:MM>, <DD-Mon-YYYY>) in system local time for next Midnight US Pacific Time."""
+    from datetime import datetime, time, timedelta, timezone
+    try:
+        import zoneinfo
+        la_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+    except Exception:
+        la_tz = timezone(timedelta(hours=-8))
+    local_now = datetime.now().astimezone()
+    la_now = datetime.now(la_tz)
+    la_midnight = datetime.combine(la_now.date() + timedelta(days=1), time(0, 0), tzinfo=la_tz)
+    local_reset = la_midnight.astimezone(local_now.tzinfo)
+    return local_reset.strftime('%H:%M'), local_reset.strftime('%d-%b-%Y')
+
+def get_gemini_day_key() -> str:
+    from datetime import datetime, timedelta, timezone
+    try:
+        import zoneinfo
+        la_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+    except Exception:
+        la_tz = timezone(timedelta(hours=-8))
+    return datetime.now(la_tz).date().isoformat()
+
+def get_groq_day_key() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date().isoformat()
+
+def get_groq_reset_info() -> tuple[str, str]:
+    """Returns (<HH:MM>, <DD-Mon-YYYY>) in system local time for next Midnight UTC."""
+    from datetime import datetime, time, timedelta, timezone
+    local_now = datetime.now().astimezone()
+    utc_now = datetime.now(timezone.utc)
+    utc_midnight = datetime.combine(utc_now.date() + timedelta(days=1), time(0, 0), tzinfo=timezone.utc)
+    local_reset = utc_midnight.astimezone(local_now.tzinfo)
+    return local_reset.strftime('%H:%M'), local_reset.strftime('%d-%b-%Y')
 
 class ClientRateLimiter:
-    def __init__(self, max_per_minute=10, max_per_day=1000):
+    def __init__(self, max_per_minute=15, max_per_day=1500):
         self.max_per_minute = max_per_minute
         self.max_per_day = max_per_day
         self.lock = threading.Lock()
         self.minute_window = deque()
         self.day_window_start = time.time()
-        self.day_count = 0
+        self.gemini_day_key = get_gemini_day_key()
+        self.groq_day_key = get_groq_day_key()
+        self.gemini_count = 0
+        self.groq_count = 0
+        self.day_count = 0  # alias for backwards compatibility
+        self.gemini_quota_exhausted = False
+        self.gemini_quota_reset_epoch = 0.0
+        self.groq_quota_exhausted = False
+        self.groq_quota_reset_epoch = 0.0
 
-    def check_daily_limit(self):
+    def mark_quota_exhausted(self, provider='gemini'):
         with self.lock:
+            prov = str(provider).lower()
+            if prov == 'groq':
+                self.groq_quota_exhausted = True
+                self.groq_quota_reset_epoch = get_groq_reset_epoch()
+            else:
+                self.gemini_quota_exhausted = True
+                self.gemini_quota_reset_epoch = get_gemini_reset_epoch()
+
+    def is_quota_exhausted(self, provider='gemini') -> bool:
+        with self.lock:
+            prov = str(provider).lower()
             now = time.time()
-            if (now - self.day_window_start) >= 86400: # 24 hours
-                self.day_window_start = now
-                self.day_count = 0
-            if self.day_count >= self.max_per_day:
+            if prov == 'groq':
+                current_day = get_groq_day_key()
+                if current_day != self.groq_day_key:
+                    self.groq_day_key = current_day
+                    self.groq_count = 0
+                    self.groq_quota_exhausted = False
+                    self.groq_quota_reset_epoch = 0.0
+                    return False
+                if getattr(self, 'groq_quota_exhausted', False):
+                    epoch = getattr(self, 'groq_quota_reset_epoch', 0.0)
+                    if epoch == 0.0 or now < epoch:
+                        return True
+                    else:
+                        self.groq_quota_exhausted = False
+                        self.groq_quota_reset_epoch = 0.0
+                        return False
+                return self.groq_count >= self.max_per_day
+            else:
+                current_day = get_gemini_day_key()
+                if current_day != self.gemini_day_key:
+                    self.gemini_day_key = current_day
+                    self.gemini_count = 0
+                    self.day_count = 0
+                    self.gemini_quota_exhausted = False
+                    self.gemini_quota_reset_epoch = 0.0
+                    return False
+                if getattr(self, 'gemini_quota_exhausted', False):
+                    epoch = getattr(self, 'gemini_quota_reset_epoch', 0.0)
+                    if epoch == 0.0 or now < epoch:
+                        return True
+                    else:
+                        self.gemini_quota_exhausted = False
+                        self.gemini_quota_reset_epoch = 0.0
+                        return False
+                return max(self.gemini_count, self.day_count) >= self.max_per_day
+
+    def check_and_clear_quota_restored(self, provider='gemini') -> bool:
+        with self.lock:
+            prov = str(provider).lower()
+            now = time.time()
+            if prov == 'groq':
+                exhausted = getattr(self, 'groq_quota_exhausted', False)
+                epoch = getattr(self, 'groq_quota_reset_epoch', 0.0)
+                current_day = get_groq_day_key()
+                day_changed = current_day != self.groq_day_key
+                if exhausted and (now >= epoch or day_changed):
+                    self.groq_quota_exhausted = False
+                    self.groq_quota_reset_epoch = 0.0
+                    self.groq_day_key = current_day
+                    self.groq_count = 0
+                    return True
+                return False
+            else:
+                exhausted = getattr(self, 'gemini_quota_exhausted', False)
+                epoch = getattr(self, 'gemini_quota_reset_epoch', 0.0)
+                current_day = get_gemini_day_key()
+                day_changed = current_day != self.gemini_day_key
+                if exhausted and (now >= epoch or day_changed):
+                    self.gemini_quota_exhausted = False
+                    self.gemini_quota_reset_epoch = 0.0
+                    self.gemini_day_key = current_day
+                    self.gemini_count = 0
+                    self.day_count = 0
+                    return True
+                return False
+
+    def check_daily_limit(self, provider='gemini'):
+        prov = str(provider).lower()
+        if self.is_quota_exhausted(prov):
+            return False, DAILY_LIMIT_MESSAGE
+        with self.lock:
+            if prov == 'groq':
+                current_day = get_groq_day_key()
+                if current_day != self.groq_day_key:
+                    self.groq_day_key = current_day
+                    self.groq_count = 0
+                count = self.groq_count
+            else:
+                current_day = get_gemini_day_key()
+                if current_day != self.gemini_day_key:
+                    self.gemini_day_key = current_day
+                    self.gemini_count = 0
+                    self.day_count = 0
+                count = max(self.gemini_count, self.day_count)
+            if count >= self.max_per_day:
                 return False, DAILY_LIMIT_MESSAGE
             return True, ""
 
@@ -54,21 +190,131 @@ class ClientRateLimiter:
                 wait_time = max(0.1, 60.0 - (now - oldest))
             time.sleep(wait_time)
 
-    def record_request(self):
+    def record_request(self, provider='gemini'):
         with self.lock:
             now = time.time()
             self.minute_window.append(now)
-            if (now - self.day_window_start) >= 86400:
-                self.day_window_start = now
-                self.day_count = 1
+            prov = str(provider).lower()
+            if prov == 'groq':
+                current_day = get_groq_day_key()
+                if current_day != self.groq_day_key:
+                    self.groq_day_key = current_day
+                    self.groq_count = 0
+                self.groq_count += 1
             else:
-                self.day_count += 1
+                current_day = get_gemini_day_key()
+                if current_day != self.gemini_day_key:
+                    self.gemini_day_key = current_day
+                    self.gemini_count = 0
+                self.gemini_count += 1
+                self.day_count = self.gemini_count
+
+    def get_remaining_quota(self, provider='gemini') -> int:
+        if self.is_quota_exhausted(provider):
+            return 0
+        with self.lock:
+            prov = str(provider).lower()
+            if prov == 'groq':
+                current_day = get_groq_day_key()
+                if current_day != self.groq_day_key:
+                    return self.max_per_day
+                return max(0, self.max_per_day - self.groq_count)
+            else:
+                current_day = get_gemini_day_key()
+                if current_day != self.gemini_day_key:
+                    return self.max_per_day
+                return max(0, self.max_per_day - max(self.gemini_count, self.day_count))
+
+    def reset_provider_count(self, provider='gemini'):
+        with self.lock:
+            prov = str(provider).lower()
+            if prov == 'groq':
+                self.groq_day_key = get_groq_day_key()
+                self.groq_count = 0
+            else:
+                self.gemini_day_key = get_gemini_day_key()
+                self.gemini_count = 0
+                self.day_count = 0
+            self.minute_window.clear()
+
+    def get_daily_count(self, provider='gemini') -> int:
+        with self.lock:
+            prov = str(provider).lower()
+            if prov == 'groq':
+                current_day = get_groq_day_key()
+                if current_day != self.groq_day_key:
+                    return 0
+                return self.groq_count
+            else:
+                current_day = get_gemini_day_key()
+                if current_day != self.gemini_day_key:
+                    return 0
+                return max(self.gemini_count, self.day_count)
+
+    def format_quota_display(self, provider='gemini') -> str:
+        count = self.get_daily_count(provider)
+        prov = str(provider).lower()
+        if prov == 'groq':
+            return f"({count}/~1500)"
+        return f"({count}/1500)"
 
     def reset_for_testing(self):
         with self.lock:
             self.minute_window.clear()
             self.day_window_start = time.time()
+            self.gemini_day_key = get_gemini_day_key()
+            self.groq_day_key = get_groq_day_key()
+            self.gemini_count = 0
+            self.groq_count = 0
             self.day_count = 0
+            self.gemini_quota_exhausted = False
+            self.gemini_quota_reset_epoch = 0.0
+            self.groq_quota_exhausted = False
+            self.groq_quota_reset_epoch = 0.0
+
+def get_daily_count(provider='gemini') -> int:
+    return _rate_limiter.get_daily_count(provider)
+
+def format_quota_display(provider='gemini') -> str:
+    return _rate_limiter.format_quota_display(provider)
+
+def apply_post_request_delay(provider='gemini', elapsed_sec=0.0):
+    if str(provider).lower() == 'groq':
+        if 0.0 <= elapsed_sec < 2.0:
+            time.sleep(2.0 - elapsed_sec)
+
+def get_gemini_reset_epoch() -> float:
+    from datetime import datetime, time, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        la_zone = ZoneInfo("America/Los_Angeles")
+    except Exception:
+        from datetime import timezone
+        la_zone = timezone(timedelta(hours=-8))
+    la_now = datetime.now(la_zone)
+    la_midnight = datetime.combine(la_now.date() + timedelta(days=1), time(0, 0), tzinfo=la_zone)
+    return la_midnight.timestamp()
+
+def get_groq_reset_epoch() -> float:
+    from datetime import datetime, time, timedelta, timezone
+    utc_now = datetime.now(timezone.utc)
+    utc_midnight = datetime.combine(utc_now.date() + timedelta(days=1), time(0, 0), tzinfo=timezone.utc)
+    return utc_midnight.timestamp()
+
+def get_remaining_daily_quota(provider='gemini') -> int:
+    return _rate_limiter.get_remaining_quota(provider)
+
+def reset_provider_count(provider='gemini'):
+    _rate_limiter.reset_provider_count(provider)
+
+def is_quota_exhausted(provider='gemini') -> bool:
+    return _rate_limiter.is_quota_exhausted(provider)
+
+def mark_quota_exhausted(provider='gemini'):
+    _rate_limiter.mark_quota_exhausted(provider)
+
+def check_and_clear_quota_restored(provider='gemini') -> bool:
+    return _rate_limiter.check_and_clear_quota_restored(provider)
 
 _rate_limiter = ClientRateLimiter()
 
@@ -139,7 +385,7 @@ def _get_mime_type(filename):
         return 'text/plain'
     return 'application/octet-stream'
 
-def classify_hosted(filename, data, endpoint, token, session=None, ocr=None, gemini_api_key=None, gemini_model='gemini-3.5-flash-lite', preferred_provider='gemini'):
+def classify_hosted(filename, data, endpoint, token, session=None, ocr=None, gemini_api_key=None, gemini_model='gemini-2.0-flash', preferred_provider='gemini'):
     """Classifies document by sending the file directly (multimodal) to Google Gemini or Groq."""
     start = time.monotonic()
     req_prov = (preferred_provider or 'gemini').lower()
@@ -147,6 +393,8 @@ def classify_hosted(filename, data, endpoint, token, session=None, ocr=None, gem
     result = Result(Filename=filename, Provider=default_prov_title)
     suggested = ''
     doc_kind = ''
+    doc_type = ''
+    issued_date = ''
     prompt_sent = {}
     raw_response = {}
     payload = {}
@@ -203,24 +451,29 @@ def classify_hosted(filename, data, endpoint, token, session=None, ocr=None, gem
             'user_text': text[:2500] if text else ''
         }
 
-        can_request, limit_msg = _rate_limiter.check_daily_limit()
+        can_request, limit_msg = _rate_limiter.check_daily_limit(preferred_provider)
         if not can_request:
             result.Status = 'QUOTA_EXHAUSTED'
-            result.Specifics = limit_msg
-            payload = {'error': limit_msg, 'provider': 'RateLimiter'}
+            active_prov = (preferred_provider or 'gemini').lower()
+            r_hour, r_date = get_groq_reset_info() if active_prov == 'groq' else get_gemini_reset_info()
+            prov_name = 'Groq' if active_prov == 'groq' else 'Google Gemini'
+            result.Specifics = f'{prov_name} quota is completely utilized! It will be reset at {r_hour} hours on {r_date} date.'
+            payload = {'error': result.Specifics, 'provider': 'RateLimiter'}
             return {
                 **asdict(result),
                 'SuggestedName': '',
                 'ProposedName': '',
                 'DocumentKind': '',
+                'ResetHour': r_hour,
+                'ResetDate': r_date,
                 'Text': text,
                 'ApiPayload': payload,
-                'PromptSent': {'error': limit_msg},
-                'RawResponse': {'error': limit_msg}
+                'PromptSent': {'error': result.Specifics},
+                'RawResponse': {'error': result.Specifics}
             }
 
         _rate_limiter.wait_for_slot()
-        _rate_limiter.record_request()
+        _rate_limiter.record_request(preferred_provider)
 
         client = session or requests
         direct_key = (gemini_api_key or os.environ.get('GEMINI_API_KEY') or '').strip()
@@ -301,7 +554,8 @@ def classify_hosted(filename, data, endpoint, token, session=None, ocr=None, gem
                     err_detail = payload.get('groq_message')
 
             if response.status_code == 429:
-                result.Specifics = f'{prov_name} free quota surpassed. Please try after some time.'
+                r_hour, r_date = get_groq_reset_info() if active_prov == 'groq' else get_gemini_reset_info()
+                result.Specifics = f'{prov_name} quota is completely utilized! It will be reset at {r_hour} hours on {r_date} date.'
             elif response.status_code == 503:
                 result.Specifics = f'Hosted classifier HTTP 503: {err_detail or "Inference service unavailable"}'
             else:
@@ -344,11 +598,19 @@ def classify_hosted(filename, data, endpoint, token, session=None, ocr=None, gem
 
     result.Seconds = round(time.monotonic() - start, 2)
     extra_meta = payload.get('metadata', {}) if isinstance(payload, dict) and isinstance(payload.get('metadata'), dict) else {}
+    active_prov = (preferred_provider or 'gemini').lower()
+    r_hour, r_date = (get_groq_reset_info() if active_prov == 'groq' else get_gemini_reset_info()) if result.Status == 'QUOTA_EXHAUSTED' else ('', '')
     return {
         **asdict(result),
         'SuggestedName': suggested,
         'ProposedName': suggested,
         'DocumentKind': doc_kind,
+        'DocumentType': doc_type,
+        'Category': result.Category,
+        'IssuedDate': issued_date,
+        'Metadata': extra_meta,
+        'ResetHour': r_hour,
+        'ResetDate': r_date,
         'Text': text,
         'ApiPayload': payload,
         'PromptSent': prompt_sent,

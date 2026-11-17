@@ -23,7 +23,26 @@ class SequentialGeminiQueue:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="GeminiWorker")
         self.current_path = None
         self.current_future = None
+        self.quota_event = None
+        self.failed_paths = set()
         self.lock = threading.Lock()
+
+    def get_quota_event(self):
+        with self.lock:
+            return self.quota_event
+
+    def clear_quota_event(self):
+        with self.lock:
+            self.quota_event = None
+            self.failed_paths.clear()
+
+    def get_failed_paths(self):
+        with self.lock:
+            return set(self.failed_paths)
+
+    def clear_failed_paths(self):
+        with self.lock:
+            self.failed_paths.clear()
 
     def is_busy(self):
         with self.lock:
@@ -38,8 +57,10 @@ class SequentialGeminiQueue:
             return None
 
     def submit_task(self, path_str, endpoint, token, gemini_api_key=None, on_complete=None, preferred_provider='gemini'):
-        """Submit a document for sequential Gemini / Groq processing. Returns True if accepted, False if busy."""
+        """Submit a document for sequential Gemini / Groq processing. Returns True if accepted, False if busy or quota paused."""
         with self.lock:
+            if self.quota_event is not None:
+                return False
             if self.current_future and not self.current_future.done():
                 return False
             self.current_path = path_str
@@ -53,6 +74,7 @@ class SequentialGeminiQueue:
         result = None
         err = None
         data = None
+        start_time = time.time()
         try:
             if not target_path.exists():
                 raise FileNotFoundError(f"File not found: {path_str}")
@@ -73,6 +95,10 @@ class SequentialGeminiQueue:
         except Exception as exc:
             err = exc
         finally:
+            elapsed = time.time() - start_time
+            if (preferred_provider or '').lower() == 'groq':
+                if 0.0 <= elapsed < 2.0:
+                    time.sleep(2.0 - elapsed)
             self._on_job_completed(path_str, result, err, endpoint, data=data, preferred_provider=preferred_provider)
             if on_complete:
                 try:
@@ -94,8 +120,10 @@ class SequentialGeminiQueue:
         # Thread-safe database connection for writing completed status
         conn = connect(None)
         try:
-            prov_name = (result.get('Provider') if result else None) or ('Groq' if (preferred_provider or '').lower() == 'groq' else 'Google Gemini 3.5 Flash Lite')
+            prov_name = (result.get('Provider') if result else None) or ('Groq' if (preferred_provider or '').lower() == 'groq' else 'Google Gemini 2.0 Flash')
             if result and result.get('Status') == 'OK':
+                with self.lock:
+                    self.failed_paths.discard(path_str)
                 api_cat = result.get('Category') or 'Other Document'
                 api_suggested = (result.get('ProposedName') or result.get('SuggestedName') or '').strip()
                 api_note = result.get('Specifics', '').strip()
@@ -162,19 +190,10 @@ class SequentialGeminiQueue:
                     provider=prov_name
                 )
             else:
-                # Handled gracefully on failure: fallback to local Indian taxonomy so queue never blocks
-                extracted_text = (result.get('Text') if result else '') or ''
-                if not extracted_text:
-                    try:
-                        from .hosted import extract_text
-                        extracted_text = extract_text(target_path.name, data)
-                    except Exception:
-                        extracted_text = ''
-                try:
-                    cat, proposed, evidence = classify_and_name_locally(extracted_text, target_path.name, return_details=True)
-                except Exception:
-                    cat, proposed, evidence = 'Other Document', target_path.name, 'Local analysis exception fallback'
-
+                with self.lock:
+                    self.failed_paths.add(path_str)
+                # No local processing: Leave document in 'pending' status so it can be reprocessed
+                # when quota resets, unless a fresh scan is run or original file is deleted.
                 status_desc = ""
                 if result:
                     status_desc = result.get('Specifics') or result.get('Status') or 'Cloud API error'
@@ -185,49 +204,44 @@ class SequentialGeminiQueue:
 
                 prompt_sent = result.get('PromptSent', {}) if result else {'error': 'Execution failed before prompt dispatch'}
                 raw_response = result.get('RawResponse', {}) if result else {'error': str(err or 'No response')}
+                is_quota = (result and result.get('Status') == 'QUOTA_EXHAUSTED') or ('429' in str(status_desc)) or ('quota' in str(status_desc).lower())
+
+                reset_hour = (result.get('ResetHour') if result else '') or ''
+                reset_date = (result.get('ResetDate') if result else '') or ''
+                if is_quota:
+                    from .hosted import get_gemini_reset_info, get_groq_reset_info, mark_quota_exhausted
+                    prov_key = (preferred_provider or 'gemini').lower()
+                    mark_quota_exhausted(prov_key)
+                    if not reset_hour or not reset_date:
+                        reset_hour, reset_date = get_groq_reset_info() if prov_key == 'groq' else get_gemini_reset_info()
+                    with self.lock:
+                        self.quota_event = {
+                            'provider': prov_key,
+                            'reset_hour': reset_hour,
+                            'reset_date': reset_date,
+                            'path': path_str
+                        }
 
                 specifics_obj = {
-                    'api_name': 'Local Indian Taxonomy Engine (Offline Fallback)',
-                    'endpoint': endpoint or 'Local Engine',
+                    'api_name': prov_name,
+                    'endpoint': endpoint or 'Cloud AI',
                     'cloud_error': status_desc,
-                    'provider': 'Local Indian Taxonomy Engine (Offline Fallback)',
-                    'category': cat,
-                    'proposed_name': proposed,
-                    'basis': evidence,
+                    'provider': prov_name,
+                    'quota_exhausted': is_quota,
+                    'reset_hour': reset_hour,
+                    'reset_date': reset_date,
                     'prompt_sent': prompt_sent,
                     'raw_response': raw_response,
                     'data_received': {
-                        'provider': 'Local Indian Taxonomy Engine (Offline Fallback)',
-                        'category': cat,
-                        'proposed_name': proposed,
-                        'specifics': evidence,
+                        'provider': prov_name,
                         'cloud_status': status_desc
-                    },
-                    'raw_json': {
-                        'category': cat,
-                        'proposed_name': proposed,
-                        'evidence': evidence,
-                        'cloud_error': status_desc,
-                        'prompt_sent': prompt_sent,
-                        'raw_response': raw_response
                     }
                 }
-                meta_obj = build_document_metadata(
-                    data,
-                    filename=target_path.name,
-                    category=cat,
-                    proposed_name=proposed,
-                    specifics_raw=f"{evidence} {extracted_text}"
-                )
                 update(
                     conn, target_path,
-                    status='done',
-                    category=cat,
-                    proposed=proposed,
-                    virtual_name=proposed,
+                    status='pending',
                     specifics=json.dumps(specifics_obj),
-                    metadata=json.dumps(meta_obj),
-                    provider='Local Indian Taxonomy Engine (Offline Fallback)'
+                    provider=prov_name
                 )
         finally:
             try:
